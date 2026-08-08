@@ -1,0 +1,30 @@
+# Data
+data/
+
+# Results and outputs
+results/
+logs/
+
+# SLURM job combos
+combos.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store

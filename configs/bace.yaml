@@ -1,0 +1,23 @@
+# BACE (Beta-secretase inhibitors) — binary classification, 1513 molecules
+dataset: BACE
+data_root: ./data
+
+# --- Model architecture ---
+hidden_dim: 128
+num_layers: 3
+dropout: 0.3
+num_heads: 4          # GAT only
+
+# --- Training ---
+batch_size: 32        # smaller dataset -> smaller batch keeps enough steps per epoch
+lr: 0.001
+weight_decay: 1.0e-5
+epochs: 100
+patience: 20
+
+# --- Scaffold split ---
+split: scaffold
+train_frac: 0.8
+val_frac: 0.1
+test_frac: 0.1
+split_dir: ./data/splits

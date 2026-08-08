@@ -1,0 +1,45 @@
+# Example search space for run_random_search.py
+# Fixed: dataset/model/readout are NOT sampled — only the hyperparameters
+# under `search_space` are. Anything not listed here (e.g. num_heads) falls
+# back to the value in configs/bbbp.yaml.
+
+dataset: BBBP
+model: gcn
+readout: mean
+
+n_trials: 30
+random_search_seed: 42     # controls which hyperparams get sampled
+seeds: [0, 1, 2]            # every trial is trained on all of these seeds
+
+search_space:
+  hidden_dim:
+    type: choice
+    values: [64, 128, 256]
+
+  num_layers:
+    type: int_uniform          # inclusive on both ends
+    low: 2
+    high: 5
+
+  dropout:
+    type: uniform
+    low: 0.1
+    high: 0.5
+
+  lr:
+    type: loguniform
+    low: 1.0e-4
+    high: 1.0e-2
+
+  weight_decay:
+    type: loguniform
+    low: 1.0e-6
+    high: 1.0e-3
+
+  batch_size:
+    type: choice
+    values: [16, 32, 64]
+
+# Note: if model were 'gat', hidden_dim MUST use type: choice with values
+# divisible by num_heads (from the base config) — this is validated at
+# startup and the script will raise a clear error otherwise.
