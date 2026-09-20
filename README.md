@@ -8,7 +8,7 @@ classification benchmarks (BBBP, BACE; ClinTox and HIV are registry-ready).
 ```bash
 module load conda/latest
 conda activate graph-pooling
-cd /work/pi_annagreen_umass_edu/Isha/graph-pooling/gnn_readout_bio
+cd <your_working_directory>
 ```
 
 All required packages (PyTorch, PyG, RDKit, scikit-learn) are already installed
@@ -44,7 +44,7 @@ python scripts/run_grid.py \
     --seeds 0 1 2
 ```
 
-## Full grid on Unity HPCC (recommended)
+## Full grid on HPCC (recommended)
 
 Each combination is one 1-GPU preemptable job — 96 jobs for the default grid.
 
