@@ -30,9 +30,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
-MODEL_ORDER    = ['gcn', 'gin', 'gat', 'graphsage']
+MODEL_ORDER    = ['gcn', 'gin', 'gat', 'graphsage', 'chemprop']
 READOUT_ORDER  = ['mean', 'sum', 'max', 'attention']
-MODEL_LABELS   = {'gcn': 'GCN', 'gin': 'GIN', 'gat': 'GAT', 'graphsage': 'GraphSAGE'}
+MODEL_LABELS   = {'gcn': 'GCN', 'gin': 'GIN', 'gat': 'GAT', 'graphsage': 'GraphSAGE', 'chemprop': 'Chemprop'}
 READOUT_COLORS = {
     'mean':      '#4C72B0',
     'sum':       '#55A868',
