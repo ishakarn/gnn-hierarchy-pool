@@ -70,7 +70,7 @@ def main():
                    choices=list(DATASET_TO_CONFIG.keys()))
     p.add_argument('--models',   nargs='+',
                    default=['gcn', 'gin', 'gat', 'graphsage', 'gcnp'],
-                   choices=['gcn', 'gin', 'gat', 'graphsage', 'gcnp'])
+                   choices=['gcn', 'gin', 'gat', 'graphsage', 'gcnp', 'chemprop'])
     p.add_argument('--readouts', nargs='+',
                    default=['mean', 'sum', 'max', 'attention', 'selfattention'],
                    choices=['mean', 'sum', 'max', 'attention', 'selfattention'])
