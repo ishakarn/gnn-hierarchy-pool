@@ -17,7 +17,7 @@ from src.train import train
 from src.evaluate import save_metrics
 
 
-VALID_MODELS  = list(MODEL_REGISTRY.keys())
+VALID_MODELS  = list(MODEL_REGISTRY.keys()) + ['chemprop']
 VALID_READOUTS = ['mean', 'sum', 'max', 'attention', 'selfattention']
 
 
@@ -67,21 +67,27 @@ def main():
     print(f"Split  train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}")
 
     # ---- Model ----
-    num_node_features = dataset[0].x.shape[1]
-    model = build_model(args.model, num_node_features, cfg, num_tasks=meta['num_tasks'])
-    model = model.to(device)
+    if args.model == 'chemprop':
+        from src.chemprop_model import build_chemprop, train_chemprop
+        model = build_chemprop(cfg, cfg['readout'], num_tasks=meta['num_tasks'])
+    else:
+        num_node_features = dataset[0].x.shape[1]
+        model = build_model(args.model, num_node_features, cfg, num_tasks=meta['num_tasks'])
+        model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model: {args.model}  |  readout={args.readout}  |  params={n_params:,}")
 
     # ---- Output paths ----
     run_name = f"{cfg['dataset']}_{args.model}_{args.readout}_seed{args.seed}"
     os.makedirs(args.output_dir, exist_ok=True)
-    checkpoint_path = os.path.join(args.output_dir, f"{run_name}_best.pt")
+    ckpt_ext        = '.ckpt' if args.model == 'chemprop' else '.pt'
+    checkpoint_path = os.path.join(args.output_dir, f"{run_name}_best{ckpt_ext}")
     metrics_path    = os.path.join(args.output_dir, f"{run_name}_metrics.json")
 
     # ---- Train ----
     print(f"\nTraining {run_name} for up to {cfg['epochs']} epochs ...")
-    results = train(
+    train_fn = train_chemprop if args.model == 'chemprop' else train
+    results = train_fn(
         model, dataset,
         train_idx, val_idx, test_idx,
         cfg, device, checkpoint_path,
