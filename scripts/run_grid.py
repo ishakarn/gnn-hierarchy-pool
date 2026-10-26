@@ -1,4 +1,8 @@
-"""Grid search: run all (dataset, model, readout, seed) combinations."""
+"""Grid search: run all (dataset, model, readout, seed) combinations.
+
+With --split spectra the grid also loops over SPECTRA parameters (--sps) and
+split replicates (--split_idxs).
+"""
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -23,7 +27,15 @@ DATASET_TO_CONFIG = {
 }
 
 
-def _run_single(dataset, model, readout, seed, output_dir, extra_args):
+def _run_name(dataset, model, readout, seed, sp=None, split_idx=None):
+    """Must match the run_name built in run_single.py."""
+    if sp is None:
+        return f"{dataset.upper()}_{model}_{readout}_seed{seed}"
+    return f"{dataset.upper()}_{model}_{readout}_sp{sp:.2f}_split{split_idx}_seed{seed}"
+
+
+def _run_single(dataset, model, readout, seed, output_dir, extra_args,
+                sp=None, split_idx=None):
     """Invoke run_single.py as a subprocess and stream its stdout."""
     config = DATASET_TO_CONFIG[dataset.upper()]
     cmd = [
@@ -35,18 +47,21 @@ def _run_single(dataset, model, readout, seed, output_dir, extra_args):
         '--seed',       str(seed),
         '--output_dir', output_dir,
     ] + extra_args
+    if sp is not None:
+        cmd += ['--split', 'spectra', '--sp', f"{sp:.2f}", '--split_idx', str(split_idx)]
 
     result = subprocess.run(cmd, capture_output=False, text=True)
     if result.returncode != 0:
-        print(f"  [ERROR] {dataset}/{model}/{readout}/seed{seed} — exit code {result.returncode}")
+        print(f"  [ERROR] {_run_name(dataset, model, readout, seed, sp, split_idx)}"
+              f" — exit code {result.returncode}")
         return False
     return True
 
 
-def _collect_results(output_dir, datasets, models, readouts, seeds) -> pd.DataFrame:
+def _collect_results(output_dir, combos) -> pd.DataFrame:
     rows = []
-    for dataset, model, readout, seed in product(datasets, models, readouts, seeds):
-        run_name     = f"{dataset.upper()}_{model}_{readout}_seed{seed}"
+    for dataset, model, readout, seed, sp, split_idx in combos:
+        run_name     = _run_name(dataset, model, readout, seed, sp, split_idx)
         metrics_path = os.path.join(output_dir, f"{run_name}_metrics.json")
         if os.path.exists(metrics_path):
             with open(metrics_path) as f:
@@ -55,6 +70,7 @@ def _collect_results(output_dir, datasets, models, readouts, seeds) -> pd.DataFr
             rows.append({
                 'dataset': dataset.upper(), 'model': model,
                 'readout': readout, 'seed': seed,
+                'sp': sp, 'split_idx': split_idx, 'status': 'missing',
                 'train_auc': None, 'val_auc': None,
                 'test_auc': None, 'best_epoch': None,
             })
@@ -78,37 +94,63 @@ def main():
     p.add_argument('--output_dir', default='./results')
     p.add_argument('--epochs',   type=int, default=None,
                    help='Override epochs in each config (e.g. for smoke test)')
+
+    # ---- SPECTRA splits ----
+    p.add_argument('--split', choices=['scaffold', 'spectra'], default='scaffold')
+    p.add_argument('--sps', nargs='+', type=float,
+                   default=[0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30],
+                   help='SPECTRA parameters to run (only with --split spectra)')
+    p.add_argument('--split_idxs', nargs='+', type=int, default=[0, 1, 2],
+                   help='SPECTRA split replicates to run (only with --split spectra)')
     args = p.parse_args()
 
     extra_args = ['--epochs', str(args.epochs)] if args.epochs else []
 
     datasets  = [d.upper() for d in args.datasets]
-    combos    = list(product(datasets, args.models, args.readouts, args.seeds))
+    if args.split == 'spectra':
+        sps, split_idxs = args.sps, args.split_idxs
+    else:
+        sps, split_idxs = [None], [None]
+    combos    = list(product(datasets, args.models, args.readouts, args.seeds,
+                             sps, split_idxs))
     n_total   = len(combos)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    print(f"Grid: {len(datasets)} dataset(s) × {len(args.models)} model(s) × "
-          f"{len(args.readouts)} readout(s) × {len(args.seeds)} seed(s) = {n_total} runs\n")
+    grid_desc = (f"{len(datasets)} dataset(s) × {len(args.models)} model(s) × "
+                 f"{len(args.readouts)} readout(s) × {len(args.seeds)} seed(s)")
+    if args.split == 'spectra':
+        grid_desc += f" × {len(sps)} SP value(s) × {len(split_idxs)} split(s)"
+    print(f"Grid: {grid_desc} = {n_total} runs\n")
 
     failed = []
-    for i, (dataset, model, readout, seed) in enumerate(combos, 1):
-        label = f"{dataset}/{model}/{readout}/seed{seed}"
+    for i, (dataset, model, readout, seed, sp, split_idx) in enumerate(combos, 1):
+        label = _run_name(dataset, model, readout, seed, sp, split_idx)
         print(f"\n[{i}/{n_total}] {label}")
-        ok = _run_single(dataset, model, readout, seed, args.output_dir, extra_args)
+        ok = _run_single(dataset, model, readout, seed, args.output_dir, extra_args,
+                         sp=sp, split_idx=split_idx)
         if not ok:
             failed.append(label)
 
     # ---- Collect per-run results ----
-    df = _collect_results(args.output_dir, datasets, args.models, args.readouts, args.seeds)
+    df = _collect_results(args.output_dir, combos)
     per_run_csv = os.path.join(args.output_dir, 'grid_results.csv')
     df.to_csv(per_run_csv, index=False)
     print(f"\nPer-run results  → {per_run_csv}")
 
     # ---- Aggregate summary ----
     numeric = ['train_auc', 'val_auc', 'test_auc']
+    for col in numeric:
+        if col not in df.columns:
+            df[col] = None
     df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
+    group_cols = ['dataset', 'model', 'readout']
+    if args.split == 'spectra':
+        group_cols.append('sp')
+        if 'status' in df.columns:
+            n_skipped = (df['status'] == 'skipped').sum()
+            print(f"Skipped SPECTRA splits (see skip_reason in grid_results.csv): {n_skipped}")
     summary = (
-        df.groupby(['dataset', 'model', 'readout'])[numeric]
+        df.groupby(group_cols)[numeric]
         .agg(['mean', 'std'])
         .round(4)
     )
