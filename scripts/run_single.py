@@ -4,12 +4,11 @@ import os
 import sys
 
 # Allow `src` imports when called from any working directory
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 
-from src.utils import set_seed, get_device, load_config, merge_configs
+from src.utils import set_seed, get_device, load_config, merge_configs, resolve_spectra_path
 from src.data import load_dataset, load_curated_csv
 from src.splits import get_or_create_split, load_spectra_split, SpectraSplitSkipped
 from src.models import build_model, MODEL_REGISTRY
@@ -49,17 +48,6 @@ def parse_args():
                    help='Skip SPECTRA splits with fewer test molecules (default 20)')
     return p.parse_args()
 
-
-def _spectra_path(cfg: dict, key: str) -> str:
-    """Resolve a path inside the SPECTRA_evaluation repo.
-
-    A relative `spectra_repo` is taken relative to this repo's root, so the
-    default `../SPECTRA_evaluation` works from any working directory.
-    """
-    repo = cfg['spectra_repo']
-    if not os.path.isabs(repo):
-        repo = os.path.join(REPO_ROOT, repo)
-    return os.path.normpath(os.path.join(repo, cfg[key]))
 
 
 def main():
@@ -106,14 +94,14 @@ def main():
     # ---- Data + split ----
     if split_type == 'spectra':
         # Graphs come from SPECTRA's curated CSV so split indices line up
-        dataset, meta = load_curated_csv(_spectra_path(cfg, 'curated_csv'),
+        dataset, meta = load_curated_csv(resolve_spectra_path(cfg, 'curated_csv'),
                                          cfg['label_cols'])
         print(f"Dataset: {cfg['dataset']} (curated CSV)  |  {len(dataset)} molecules  "
               f"|  {meta['num_tasks']} task(s)")
         labels = [g.y.view(-1).tolist() for g in dataset]
         try:
             train_idx, val_idx, test_idx = load_spectra_split(
-                _spectra_path(cfg, 'spectra_split_dir'),
+                resolve_spectra_path(cfg, 'spectra_split_dir'),
                 sp=args.sp,
                 split_idx=args.split_idx,
                 labels=labels,

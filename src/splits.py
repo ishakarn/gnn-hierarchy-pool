@@ -245,5 +245,4 @@ def load_spectra_split(
             if not idxs or not _has_both_classes(idxs, labels):
                 raise SpectraSplitSkipped(f"{name} set does not contain both classes")
 
-    print(f"Loaded SPECTRA split SP={sp:.2f} split={split_idx} from {path}")
     return train_idx, val_idx, test_idx

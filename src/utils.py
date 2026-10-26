@@ -1,5 +1,6 @@
 """Shared utilities: seeding, device selection, config I/O."""
 
+import os
 import random
 
 import numpy as np
@@ -32,3 +33,18 @@ def merge_configs(base: dict, overrides: dict) -> dict:
     cfg = dict(base)
     cfg.update({k: v for k, v in overrides.items() if v is not None})
     return cfg
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resolve_spectra_path(cfg: dict, key: str) -> str:
+    """Resolve a path inside the SPECTRA_evaluation repo (e.g. key='curated_csv').
+
+    A relative `spectra_repo` is taken relative to this repo's root, so the
+    default `../SPECTRA_evaluation` works from any working directory.
+    """
+    repo = cfg['spectra_repo']
+    if not os.path.isabs(repo):
+        repo = os.path.join(REPO_ROOT, repo)
+    return os.path.normpath(os.path.join(repo, cfg[key]))
