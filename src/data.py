@@ -1,13 +1,18 @@
-"""Dataset loading for MoleculeNet molecular classification benchmarks."""
+"""Dataset loading for MoleculeNet benchmarks (binary classification and regression)."""
 
 from torch_geometric.datasets import MoleculeNet
 
-# Registry makes it easy to add ClinTox, HIV, etc. later.
+# task_type selects the loss and metrics (src/tasks.py); only binary splits are class-stratified.
 DATASET_REGISTRY = {
-    'BBBP':    {'name': 'BBBP',    'task_type': 'binary', 'num_tasks': 1},
-    'BACE':    {'name': 'BACE',    'task_type': 'binary', 'num_tasks': 1},
-    'CLINTOX': {'name': 'ClinTox', 'task_type': 'binary', 'num_tasks': 2},
-    'HIV':     {'name': 'HIV',     'task_type': 'binary', 'num_tasks': 1},
+    # Binary classification
+    'BBBP':     {'name': 'BBBP',     'task_type': 'binary',     'num_tasks': 1},
+    'BACE':     {'name': 'BACE',     'task_type': 'binary',     'num_tasks': 1},
+    'CLINTOX':  {'name': 'ClinTox',  'task_type': 'binary',     'num_tasks': 2},
+    'HIV':      {'name': 'HIV',      'task_type': 'binary',     'num_tasks': 1},
+    # Regression
+    'ESOL':     {'name': 'ESOL',     'task_type': 'regression', 'num_tasks': 1},   # log solubility
+    'FREESOLV': {'name': 'FreeSolv', 'task_type': 'regression', 'num_tasks': 1},   # hydration free energy
+    'LIPO':     {'name': 'Lipo',     'task_type': 'regression', 'num_tasks': 1},   # logD at pH 7.4
 }
 
 
@@ -39,3 +44,10 @@ def get_smiles(dataset) -> list:
     for data in dataset:
         smiles.append(getattr(data, 'smiles', None))
     return smiles
+
+
+def feature_dims(graphs) -> tuple:
+    """(num_node_features, num_edge_features) of the first graph; 0 edge features without edge_attr."""
+    g = graphs[0]
+    ea = getattr(g, 'edge_attr', None)
+    return int(g.x.shape[1]), (int(ea.shape[1]) if ea is not None and ea.dim() > 1 else 0)

@@ -13,12 +13,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 
+from aggregate_results import grid_summary
+
 
 DATASET_TO_CONFIG = {
     'BBBP': 'configs/bbbp.yaml',
     'BACE': 'configs/bace.yaml',
-    # Add ClinTox / HIV here when configs are ready:
-    # 'CLINTOX': 'configs/clintox.yaml',
+    'CLINTOX': 'configs/clintox.yaml',
+    # Regression
+    'ESOL':     'configs/esol.yaml',
+    'FREESOLV': 'configs/freesolv.yaml',
+    'LIPO':     'configs/lipo.yaml',
+    # Add HIV here when a config is ready:
     # 'HIV':     'configs/hiv.yaml',
 }
 
@@ -69,8 +75,8 @@ def main():
                    default=['BBBP', 'BACE'],
                    choices=list(DATASET_TO_CONFIG.keys()))
     p.add_argument('--models',   nargs='+',
-                   default=['gcn', 'gin', 'gat', 'graphsage', 'gcnp'],
-                   choices=['gcn', 'gin', 'gat', 'graphsage', 'gcnp', 'chemprop'])
+                   default=['gin', 'gine'],
+                   choices=['gcn', 'gin', 'gine', 'gat', 'graphsage', 'gcnp', 'chemprop'])
     p.add_argument('--readouts', nargs='+',
                    default=['mean', 'sum', 'max', 'attention', 'selfattention'],
                    choices=['mean', 'sum', 'max', 'attention', 'selfattention'])
@@ -78,6 +84,8 @@ def main():
     p.add_argument('--output_dir', default='./results')
     p.add_argument('--epochs',   type=int, default=None,
                    help='Override epochs in each config (e.g. for smoke test)')
+    p.add_argument('--skip_existing', action='store_true',
+                   help='Skip runs whose metrics JSON already exists (resume after preemption)')
     args = p.parse_args()
 
     extra_args = ['--epochs', str(args.epochs)] if args.epochs else []
@@ -94,6 +102,10 @@ def main():
     for i, (dataset, model, readout, seed) in enumerate(combos, 1):
         label = f"{dataset}/{model}/{readout}/seed{seed}"
         print(f"\n[{i}/{n_total}] {label}")
+        metrics_path = os.path.join(args.output_dir, f"{dataset}_{model}_{readout}_seed{seed}_metrics.json")
+        if args.skip_existing and os.path.exists(metrics_path):
+            print(f"  [skip] metrics already exist: {metrics_path}")
+            continue
         ok = _run_single(dataset, model, readout, seed, args.output_dir, extra_args)
         if not ok:
             failed.append(label)
@@ -105,14 +117,7 @@ def main():
     print(f"\nPer-run results  → {per_run_csv}")
 
     # ---- Aggregate summary ----
-    numeric = ['train_auc', 'val_auc', 'test_auc']
-    df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
-    summary = (
-        df.groupby(['dataset', 'model', 'readout'])[numeric]
-        .agg(['mean', 'std'])
-        .round(4)
-    )
-    summary.columns = [f"{col}_{stat}" for col, stat in summary.columns]
+    summary = grid_summary(df)
     summary_csv = os.path.join(args.output_dir, 'grid_summary.csv')
     summary.to_csv(summary_csv)
     print(f"Aggregate summary → {summary_csv}\n")

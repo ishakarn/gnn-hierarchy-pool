@@ -1,18 +1,15 @@
-"""Training loop with early stopping on validation ROC-AUC."""
-
-import os
+"""Training loop with early stopping on the task's validation metric (AUC or RMSE)."""
 
 import torch
-import torch.nn as nn
 from torch_geometric.loader import DataLoader
 
-from src.evaluate import evaluate_auc
+from src.evaluate import evaluate
+from src.tasks import build_task, stack_labels
 
 
-def _train_epoch(model, loader, optimizer, device) -> float:
-    """One pass over the training set. Returns mean BCEWithLogitsLoss."""
+def _train_epoch(model, loader, optimizer, device, task) -> float:
+    """One pass over the training set. Returns mean loss per valid label."""
     model.train()
-    criterion = nn.BCEWithLogitsLoss()
     total_loss, total_valid = 0.0, 0
 
     for batch in loader:
@@ -28,12 +25,12 @@ def _train_epoch(model, loader, optimizer, device) -> float:
         if out.dim() == 2 and out.shape[1] == 1:
             out = out.squeeze(-1)
 
-        # Mask missing labels (NaN) for future multi-task compatibility
+        # Missing labels (NaN) are masked in task.loss
         valid = ~torch.isnan(y)
         if valid.sum() == 0:
             continue
 
-        loss = criterion(out[valid], y[valid])
+        loss = task.loss(out, y)
         loss.backward()
         optimizer.step()
 
@@ -52,18 +49,21 @@ def train(
     cfg: dict,
     device,
     checkpoint_path: str,
+    task=None,
 ) -> dict:
-    """Full training run with early stopping.
+    """Train with early stopping on the task's primary val metric, keeping the best
+    checkpoint at `checkpoint_path`. `task` defaults to build_task(cfg).
 
-    Saves the best checkpoint (highest val AUC) to `checkpoint_path`.
-    At the end, reloads the best checkpoint and reports train/val/test AUC.
-
-    Returns:
-        dict with train_auc, val_auc, test_auc, best_epoch, history.
+    Returns {split}_{metric} for every split and metric (binary: train_auc,
+    val_auc, test_auc), best_epoch and history.
     """
     train_data = [dataset[i] for i in train_idx]
     val_data   = [dataset[i] for i in val_idx]
     test_data  = [dataset[i] for i in test_idx]
+
+    task = task or build_task(cfg)
+    task.fit(stack_labels(train_data))
+    metric = task.primary
 
     bs = cfg['batch_size']
     train_loader = DataLoader(train_data, batch_size=bs, shuffle=True,  num_workers=0)
@@ -77,46 +77,46 @@ def train(
     )
 
     patience         = cfg.get('patience', 20)
-    best_val_auc     = -1.0
+    best_val         = None
     best_epoch       = 1
     patience_counter = 0
     history          = []
 
-    # Always save an initial checkpoint so we have a fallback even if val_auc
-    # is NaN for every epoch (can happen when a split lands all-one-class in val).
+    # Always save an initial checkpoint so we have a fallback even if the val
+    # metric is NaN for every epoch (can happen when val lands all-one-class).
     torch.save(model.state_dict(), checkpoint_path)
 
     for epoch in range(1, cfg['epochs'] + 1):
-        train_loss = _train_epoch(model, train_loader, optimizer, device)
-        val_auc    = evaluate_auc(model, val_loader, device)
-        is_nan     = (val_auc != val_auc)   # True when val_auc is float('nan')
+        train_loss = _train_epoch(model, train_loader, optimizer, device, task)
+        val_score  = evaluate(model, val_loader, device, task)[metric]
+        is_nan     = (val_score != val_score)   # True when val_score is float('nan')
 
         history.append({
             'epoch': epoch,
             'train_loss': round(train_loss, 6),
-            'val_auc': None if is_nan else round(val_auc, 6),
+            f'val_{metric}': None if is_nan else round(val_score, 6),
         })
 
-        if not is_nan and val_auc > best_val_auc:
-            best_val_auc = val_auc
-            best_epoch   = epoch
+        if task.is_better(val_score, best_val):
+            best_val   = val_score
+            best_epoch = epoch
             patience_counter = 0
             torch.save(model.state_dict(), checkpoint_path)
         elif not is_nan:
             # Only count patience when we actually have a valid metric
             patience_counter += 1
 
-        auc_str = "nan" if is_nan else f"{val_auc:.4f}"
+        score_str = "nan" if is_nan else f"{val_score:.4f}"
         if epoch % 10 == 0 or epoch <= 3:
             print(
-                f"  Epoch {epoch:4d} | loss {train_loss:.4f} | val_auc {auc_str}"
+                f"  Epoch {epoch:4d} | loss {train_loss:.4f} | val_{metric} {score_str}"
                 + (" *" if (not is_nan and patience_counter == 0) else "")
             )
 
         if patience_counter >= patience:
             print(
                 f"  Early stopping at epoch {epoch}  "
-                f"(best val_auc={best_val_auc:.4f} at epoch {best_epoch})"
+                f"(best val_{metric}={best_val:.4f} at epoch {best_epoch})"
             )
             break
 
@@ -124,14 +124,13 @@ def train(
     model.load_state_dict(
         torch.load(checkpoint_path, map_location=device, weights_only=True)
     )
-    train_auc = evaluate_auc(model, train_loader, device)
-    val_auc   = evaluate_auc(model, val_loader,   device)
-    test_auc  = evaluate_auc(model, test_loader,  device)
+    results = {}
+    for split, loader in [('train', train_loader), ('val', val_loader), ('test', test_loader)]:
+        for name, value in evaluate(model, loader, device, task).items():
+            results[f'{split}_{name}'] = value
 
-    return {
-        'train_auc':  train_auc,
-        'val_auc':    val_auc,
-        'test_auc':   test_auc,
+    results.update({
         'best_epoch': best_epoch,
         'history':    history,
-    }
+    })
+    return results

@@ -2,7 +2,8 @@
 
 Samples `n_trials` hyperparameter configs from a search-space YAML, runs each
 across a fixed list of seeds via run_single.py (as a subprocess, same pattern
-as run_grid.py), and ranks trials by mean validation AUC.
+as run_grid.py), and ranks trials by the mean validation score
+(AUC for binary datasets, RMSE for regression).
 
 Search-space YAML format (see configs/bbbp_search_space.yaml for an example):
 
@@ -44,6 +45,8 @@ import pandas as pd
 import yaml
 
 from run_grid import DATASET_TO_CONFIG
+from src.data import DATASET_REGISTRY
+from src.tasks import build_task
 from src.utils import load_config, merge_configs
 
 
@@ -175,14 +178,11 @@ def summarize_trial(trial_id, sampled_hyperparams, seed_results):
     row.update(sampled_hyperparams)
 
     df = pd.DataFrame(seed_results)
-    for metric in ('train_auc', 'val_auc', 'test_auc'):
-        if metric in df.columns and len(df):
-            vals = pd.to_numeric(df[metric], errors='coerce')
-            row[f'{metric}_mean'] = round(vals.mean(), 4)
-            row[f'{metric}_std'] = round(vals.std(), 4) if len(vals) > 1 else 0.0
-        else:
-            row[f'{metric}_mean'] = None
-            row[f'{metric}_std'] = None
+    # {split}_{metric} columns: *_auc for binary, *_rmse/_mae/_r2 for regression
+    for metric in [c for c in df.columns if c.startswith(('train_', 'val_', 'test_'))]:
+        vals = pd.to_numeric(df[metric], errors='coerce')
+        row[f'{metric}_mean'] = round(vals.mean(), 4)
+        row[f'{metric}_std'] = round(vals.std(), 4) if len(vals) > 1 else 0.0
     return row
 
 def _to_native(value):
@@ -260,7 +260,11 @@ def main():
         print("\nNo trials completed successfully — nothing to summarize.")
         return
 
-    results_df = pd.DataFrame(trial_rows).sort_values('val_auc_mean', ascending=False)
+    task = build_task({'task_type': DATASET_REGISTRY[dataset]['task_type']})
+    metric = task.primary
+    results_df = pd.DataFrame(trial_rows).sort_values(
+        f'val_{metric}_mean', ascending=not task.higher_is_better
+    )
     trials_csv = os.path.join(args.output_dir, 'random_search_trials.csv')
     results_df.to_csv(trials_csv, index=False)
 
@@ -279,8 +283,8 @@ def main():
 
     print(
         f"\nBest trial: {best_trial_id}  "
-        f"(val_auc = {best_row['val_auc_mean']:.4f} +/- {best_row['val_auc_std']:.4f}, "
-        f"test_auc = {best_row['test_auc_mean']:.4f})"
+        f"(val_{metric} = {best_row[f'val_{metric}_mean']:.4f} +/- {best_row[f'val_{metric}_std']:.4f}, "
+        f"test_{metric} = {best_row[f'test_{metric}_mean']:.4f})"
     )
     print(f"Best config saved -> {best_config_path}")
     print(

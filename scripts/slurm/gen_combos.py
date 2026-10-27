@@ -12,8 +12,8 @@ from itertools import product
 
 DEFAULTS = {
     'datasets': ['BBBP', 'BACE'],
-    'models':   ['gcn', 'gin', 'gat', 'graphsage'],
-    'readouts': ['mean', 'sum', 'max', 'attention'],
+    'models':   ['gin', 'gine'],
+    'readouts': ['mean', 'sum', 'max', 'attention', 'selfattention'],
     'seeds':    list(range(10)),   # 0–9
 }
 

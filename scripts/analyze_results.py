@@ -1,15 +1,20 @@
 """
-Statistical analysis of grid experiment results.
+Statistical analysis of grid experiment results (binary and regression datasets).
 
-Reads grid_results.csv and produces:
-  - Summary table: mean/std/CI of test AUC per dataset/model/readout
+Reads grid_results.csv and produces, per dataset, on that dataset's metric
+(ROC-AUC for binary; RMSE by default for regression, see --regression_metric):
+  - Summary table: mean/std/CI of every recorded metric per dataset/model/readout
   - Paired readout comparisons within each dataset/model (same seeds)
   - t-test, Wilcoxon signed-rank, BH FDR correction, Cohen's dz
   - Plots: heatmaps, bars with CI, gen gap, readout rankings, p-value heatmaps
 
+gen_gap is signed so that positive = overfitting (train better than test):
+train - test for AUC/R², test - train for RMSE/MAE.
+
 Usage:
     python scripts/analyze_results.py --datasets BACE
-    python scripts/analyze_results.py --datasets BACE BBBP
+    python scripts/analyze_results.py --datasets BACE BBBP ESOL
+    python scripts/analyze_results.py --datasets ESOL --regression_metric mae
 """
 
 import os
@@ -27,18 +32,12 @@ from scipy import stats
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-# ── constants ─────────────────────────────────────────────────────────────────
-
-MODEL_ORDER    = ['gcn', 'gin', 'gat', 'graphsage', 'chemprop']
-READOUT_ORDER  = ['mean', 'sum', 'max', 'attention']
-MODEL_LABELS   = {'gcn': 'GCN', 'gin': 'GIN', 'gat': 'GAT', 'graphsage': 'GraphSAGE', 'chemprop': 'Chemprop'}
-READOUT_COLORS = {
-    'mean':      '#4C72B0',
-    'sum':       '#55A868',
-    'max':       '#C44E52',
-    'attention': '#8172B2',
-}
+from src.results import (
+    MODEL_ORDER, READOUT_ORDER, REGRESSION_METRICS, SPLITS,
+    analysis_metric, ci95, color_range, dataset_task_type, higher_is_better,
+    load_grid_results, metric_label, model_label, ordered, readout_color, readout_label,
+    set_bar_ylim, task_metrics,
+)
 
 
 # ── statistics helpers ────────────────────────────────────────────────────────
@@ -68,77 +67,61 @@ def _cohen_dz(a, b):
     return float(np.mean(d) / sd) if sd > 1e-12 else float('nan')
 
 
-def _ci95(values):
-    """95% CI half-width using t-distribution."""
-    n  = len(values)
-    se = np.std(values, ddof=1) / np.sqrt(n)
-    t  = stats.t.ppf(0.975, df=n - 1)
-    return float(t * se)
-
-
-# ── data loading ──────────────────────────────────────────────────────────────
-
-def load_results(results_dir, datasets):
-    path = os.path.join(results_dir, 'grid_results.csv')
-    df = pd.read_csv(path)
-    df.columns = df.columns.str.strip()
-    df['dataset'] = df['dataset'].str.upper()
-    if datasets:
-        df = df[df['dataset'].isin([d.upper() for d in datasets])].copy()
-    for col in ['train_auc', 'val_auc', 'test_auc']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df['model']   = pd.Categorical(df['model'],   categories=MODEL_ORDER,   ordered=True)
-    df['readout'] = pd.Categorical(df['readout'], categories=READOUT_ORDER, ordered=True)
-    return df.sort_values(['dataset', 'model', 'readout', 'seed'])
-
-
 # ── summary table ─────────────────────────────────────────────────────────────
 
-def compute_summary(df):
-    """Per dataset/model/readout: mean, std, CI95, gen_gap for all AUC metrics."""
+def compute_summary(df, metric_of):
+    """Per dataset/model/readout: mean, std, CI95 of every metric, and gen_gap.
+
+    metric_of: {dataset: analysis metric}; gen_gap uses that metric.
+    """
     rows = []
     for (dataset, model, readout), grp in df.groupby(['dataset', 'model', 'readout']):
-        for metric in ['train_auc', 'val_auc', 'test_auc']:
-            vals = grp[metric].dropna().values
-            if len(vals) == 0:
-                continue
+        task_type = grp['task_type'].iloc[0]
+        metric    = metric_of[dataset]
         row = {'dataset': dataset, 'model': model, 'readout': readout,
-               'n_seeds': len(grp)}
-        for metric in ['train_auc', 'val_auc', 'test_auc']:
-            vals = grp[metric].dropna().values
-            if len(vals) > 0:
-                row[f'{metric}_mean'] = round(float(np.mean(vals)), 4)
-                row[f'{metric}_std']  = round(float(np.std(vals, ddof=1) if len(vals) > 1 else 0), 4)
-                row[f'{metric}_ci95'] = round(_ci95(vals) if len(vals) > 1 else float('nan'), 4)
-            else:
-                row[f'{metric}_mean'] = float('nan')
-                row[f'{metric}_std']  = float('nan')
-                row[f'{metric}_ci95'] = float('nan')
-        train_m = grp['train_auc'].dropna().values
-        test_m  = grp['test_auc'].dropna().values
-        row['gen_gap_mean'] = round(float(np.mean(train_m) - np.mean(test_m))
-                                    if len(train_m) and len(test_m) else float('nan'), 4)
+               'task_type': task_type, 'metric': metric, 'n_seeds': len(grp)}
+        for m in task_metrics(task_type):
+            for split in SPLITS:
+                col  = f'{split}_{m}'
+                vals = grp[col].dropna().values if col in grp else np.array([])
+                if len(vals) > 0:
+                    row[f'{col}_mean'] = round(float(np.mean(vals)), 4)
+                    row[f'{col}_std']  = round(float(np.std(vals, ddof=1) if len(vals) > 1 else 0), 4)
+                    row[f'{col}_ci95'] = round(ci95(vals), 4)
+                else:
+                    row[f'{col}_mean'] = float('nan')
+                    row[f'{col}_std']  = float('nan')
+                    row[f'{col}_ci95'] = float('nan')
+        train_m = grp[f'train_{metric}'].dropna().values
+        test_m  = grp[f'test_{metric}'].dropna().values
+        if len(train_m) and len(test_m):
+            gap = float(np.mean(train_m) - np.mean(test_m))
+            row['gen_gap_mean'] = round(gap if higher_is_better(metric) else -gap, 4)
+        else:
+            row['gen_gap_mean'] = float('nan')
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 # ── paired comparisons ────────────────────────────────────────────────────────
 
-def compute_paired_tests(df):
+def compute_paired_tests(df, metric_of):
     """
-    For every (dataset, model) pair, compare all C(4,2)=6 readout pairs
-    using test_auc values that share the same seed.
+    For every (dataset, model) pair, compare all pairs of readouts present
+    using test values of the dataset's metric that share the same seed.
 
     Returns DataFrame with one row per comparison including:
     t-stat, t-test p, Wilcoxon p, BH-adjusted p (within dataset/model block),
-    Cohen's dz, mean difference.
+    Cohen's dz, mean difference (A - B), and which readout is better on average.
     """
     rows = []
     for (dataset, model), grp in df.groupby(['dataset', 'model']):
+        metric = metric_of[dataset]
+        col = f'test_{metric}'
         block_rows = []
-        for rA, rB in itertools.combinations(READOUT_ORDER, 2):
-            subA = grp[grp['readout'] == rA].set_index('seed')['test_auc'].dropna()
-            subB = grp[grp['readout'] == rB].set_index('seed')['test_auc'].dropna()
+        for rA, rB in itertools.combinations(ordered(grp['readout'], READOUT_ORDER), 2):
+            subA = grp[grp['readout'] == rA].set_index('seed')[col].dropna()
+            subB = grp[grp['readout'] == rB].set_index('seed')[col].dropna()
             common_seeds = subA.index.intersection(subB.index)
             if len(common_seeds) < 3:
                 continue
@@ -154,14 +137,16 @@ def compute_paired_tests(df):
                 except Exception:
                     w_pval = float('nan')
 
+            better = rA if (np.mean(d) > 0) == higher_is_better(metric) else rB
             block_rows.append({
-                'dataset': dataset, 'model': model,
+                'dataset': dataset, 'model': model, 'metric': metric,
                 'readout_A': rA, 'readout_B': rB,
                 'n_seeds': len(common_seeds),
                 'mean_A': round(float(np.mean(a)), 4),
                 'mean_B': round(float(np.mean(b)), 4),
                 'mean_diff': round(float(np.mean(d)), 4),   # A - B
                 'std_diff':  round(float(np.std(d, ddof=1)), 4),
+                'better':    better if np.mean(d) != 0 else 'tie',
                 'cohen_dz':  round(_cohen_dz(a, b), 4),
                 't_stat':    round(float(t_stat), 4),
                 't_pval':    float(t_pval),
@@ -185,15 +170,15 @@ def compute_paired_tests(df):
 
 # ── plots ─────────────────────────────────────────────────────────────────────
 
-def _heatmap(ax, pivot, title, vmin=None, vmax=None, fmt='.3f', cmap='RdYlGn'):
+def _heatmap(ax, pivot, title, metric, fmt='.3f'):
     vals = pivot.values.astype(float)
-    if vmin is None: vmin = max(0.5, np.nanmin(vals) - 0.02)
-    if vmax is None: vmax = min(1.0, np.nanmax(vals) + 0.02)
+    vmin, vmax = color_range(vals, metric)
+    cmap = 'RdYlGn' if higher_is_better(metric) else 'RdYlGn_r'   # green = better
     im = ax.imshow(vals, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
     ax.set_xticks(range(len(pivot.columns)))
     ax.set_yticks(range(len(pivot.index)))
-    ax.set_xticklabels([r.capitalize() for r in pivot.columns], fontsize=10)
-    ax.set_yticklabels([MODEL_LABELS.get(m, m) for m in pivot.index], fontsize=10)
+    ax.set_xticklabels([readout_label(r) for r in pivot.columns], fontsize=10)
+    ax.set_yticklabels([model_label(m) for m in pivot.index], fontsize=10)
     ax.set_title(title, fontsize=12, fontweight='bold')
     for i in range(len(pivot.index)):
         for j in range(len(pivot.columns)):
@@ -201,24 +186,25 @@ def _heatmap(ax, pivot, title, vmin=None, vmax=None, fmt='.3f', cmap='RdYlGn'):
             txt = f'{v:{fmt}}' if not np.isnan(v) else 'NaN'
             rng = (vmax - vmin) if vmax != vmin else 1
             rel = (v - vmin) / rng
+            if not higher_is_better(metric):
+                rel = 1 - rel
             color = 'black' if 0.3 < rel < 0.85 else 'white'
             ax.text(j, i, txt, ha='center', va='center', fontsize=9,
                     color=color, fontweight='bold')
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
 
-def plot_heatmaps(summary, dataset, out_dir):
-    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
-    fig.suptitle(f'{dataset} — Mean ROC-AUC Heatmaps', fontsize=14, fontweight='bold')
-
+def plot_heatmaps(summary, dataset, metric, out_dir):
     sub = summary[summary['dataset'] == dataset]
-    for ax, metric, title in [
-        (axes[0], 'test_auc_mean',  'Test AUC (mean over seeds)'),
-        (axes[1], 'val_auc_mean',   'Val AUC (mean over seeds)'),
-    ]:
-        pivot = sub.pivot(index='model', columns='readout', values=metric) \
-                   .reindex(index=MODEL_ORDER, columns=READOUT_ORDER)
-        _heatmap(ax, pivot, title)
+    models, readouts = ordered(sub['model'], MODEL_ORDER), ordered(sub['readout'], READOUT_ORDER)
+    label = metric_label(metric)
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, max(5, 0.6 * len(models) + 2)))
+    fig.suptitle(f'{dataset} — Mean {label} Heatmaps', fontsize=14, fontweight='bold')
+    for ax, split in [(axes[0], 'test'), (axes[1], 'val')]:
+        pivot = sub.pivot(index='model', columns='readout', values=f'{split}_{metric}_mean') \
+                   .reindex(index=models, columns=readouts)
+        _heatmap(ax, pivot, f'{split.capitalize()} {label} (mean over seeds)', metric)
         ax.set_xlabel('Readout', fontsize=11)
         ax.set_ylabel('Model', fontsize=11)
 
@@ -229,44 +215,49 @@ def plot_heatmaps(summary, dataset, out_dir):
     print(f"  Saved {path}")
 
 
-def plot_bars_and_gap(summary, dataset, out_dir):
+def plot_bars_and_gap(summary, dataset, metric, out_dir):
     sub  = summary[summary['dataset'] == dataset]
+    models, readouts = ordered(sub['model'], MODEL_ORDER), ordered(sub['readout'], READOUT_ORDER)
+    label = metric_label(metric)
+
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    fig.suptitle(f'{dataset} — Test AUC & Generalisation Gap', fontsize=14, fontweight='bold')
+    fig.suptitle(f'{dataset} — Test {label} & Generalisation Gap', fontsize=14, fontweight='bold')
 
     # Bar chart with 95% CI
     ax = axes[0]
-    n_m, n_r = len(MODEL_ORDER), len(READOUT_ORDER)
-    width = 0.18
+    n_m, n_r = len(models), len(readouts)
+    width = 0.8 / n_r
     offsets = np.linspace(-(n_r - 1) / 2, (n_r - 1) / 2, n_r) * width
-    for j, readout in enumerate(READOUT_ORDER):
-        rs = sub[sub['readout'] == readout].set_index('model').reindex(MODEL_ORDER)
+    for j, readout in enumerate(readouts):
+        rs = sub[sub['readout'] == readout].set_index('model').reindex(models)
         x  = np.arange(n_m) + offsets[j]
-        ax.bar(x, rs['test_auc_mean'], width=width,
-               color=READOUT_COLORS[readout], label=readout.capitalize(), alpha=0.88)
-        ax.errorbar(x, rs['test_auc_mean'], yerr=rs['test_auc_ci95'],
+        ax.bar(x, rs[f'test_{metric}_mean'], width=width,
+               color=readout_color(readout, j), label=readout_label(readout), alpha=0.88)
+        ax.errorbar(x, rs[f'test_{metric}_mean'], yerr=rs[f'test_{metric}_ci95'],
                     fmt='none', color='#333', capsize=3, linewidth=1.2)
     ax.set_xticks(np.arange(n_m))
-    ax.set_xticklabels([MODEL_LABELS[m] for m in MODEL_ORDER], fontsize=11)
-    ax.set_ylabel('Test ROC-AUC', fontsize=11)
-    ax.set_title('Test AUC ± 95% CI', fontsize=12, fontweight='bold')
-    ax.legend(title='Readout', fontsize=9, title_fontsize=9, loc='lower right')
-    ax.set_ylim(0.45, 1.02)
+    ax.set_xticklabels([model_label(m) for m in models], fontsize=11)
+    ax.set_ylabel(f'Test {label}', fontsize=11)
+    ax.set_title(f'Test {label} ± 95% CI', fontsize=12, fontweight='bold')
+    ax.legend(title='Readout', fontsize=9, title_fontsize=9,
+              loc='lower right' if metric == 'auc' else 'best')
+    set_bar_ylim(ax, metric, sub[f'test_{metric}_mean'].values + sub[f'test_{metric}_ci95'].fillna(0).values)
     ax.yaxis.grid(True, linestyle='--', alpha=0.6)
     ax.set_axisbelow(True)
 
     # Gen gap
     ax = axes[1]
-    for j, readout in enumerate(READOUT_ORDER):
-        rs = sub[sub['readout'] == readout].set_index('model').reindex(MODEL_ORDER)
+    for j, readout in enumerate(readouts):
+        rs = sub[sub['readout'] == readout].set_index('model').reindex(models)
         x  = np.arange(n_m) + offsets[j]
         ax.bar(x, rs['gen_gap_mean'], width=width,
-               color=READOUT_COLORS[readout], label=readout.capitalize(), alpha=0.88)
+               color=readout_color(readout, j), label=readout_label(readout), alpha=0.88)
     ax.set_xticks(np.arange(n_m))
-    ax.set_xticklabels([MODEL_LABELS[m] for m in MODEL_ORDER], fontsize=11)
-    ax.set_ylabel('Train AUC − Test AUC', fontsize=11)
-    ax.set_title('Generalisation Gap', fontsize=12, fontweight='bold')
-    ax.legend(title='Readout', fontsize=9, title_fontsize=9)
+    ax.set_xticklabels([model_label(m) for m in models], fontsize=11)
+    gap_label = 'Train − Test' if higher_is_better(metric) else 'Test − Train'
+    ax.set_ylabel(f'{gap_label} {label}', fontsize=11)
+    ax.set_title('Generalisation Gap (positive = overfit)', fontsize=12, fontweight='bold')
+    ax.legend(title='Readout', fontsize=9, title_fontsize=9, loc='best')
     ax.axhline(0, color='black', linewidth=0.8)
     ax.yaxis.grid(True, linestyle='--', alpha=0.6)
     ax.set_axisbelow(True)
@@ -278,34 +269,42 @@ def plot_bars_and_gap(summary, dataset, out_dir):
     print(f"  Saved {path}")
 
 
-def plot_readout_rankings(summary, dataset, out_dir):
-    """For each model: horizontal bar showing readout ranking by mean test AUC."""
+def plot_readout_rankings(summary, dataset, metric, out_dir):
+    """For each model: horizontal bars ranking readouts by mean test metric (best on top)."""
     sub = summary[summary['dataset'] == dataset]
-    fig, axes = plt.subplots(1, len(MODEL_ORDER), figsize=(18, 5), sharey=False)
-    fig.suptitle(f'{dataset} — Readout Rankings per Model (Test AUC)',
+    models, readouts = ordered(sub['model'], MODEL_ORDER), ordered(sub['readout'], READOUT_ORDER)
+    label = metric_label(metric)
+    fig, axes = plt.subplots(1, len(models), figsize=(3.6 * len(models) + 1, 5),
+                             sharey=False, squeeze=False)
+    fig.suptitle(f'{dataset} — Readout Rankings per Model (Test {label})',
                  fontsize=14, fontweight='bold')
 
-    for ax, model in zip(axes, MODEL_ORDER):
+    for ax, model in zip(axes[0], models):
         ms = sub[sub['model'] == model].set_index('readout')
-        ranked = ms['test_auc_mean'].reindex(READOUT_ORDER).sort_values(ascending=True)
-        ci     = ms['test_auc_ci95'].reindex(ranked.index)
-        colors = [READOUT_COLORS[r] for r in ranked.index]
-        bars   = ax.barh(range(len(ranked)), ranked.values,
-                         color=colors, alpha=0.88, height=0.6)
+        # barh draws index 0 at the bottom, so sort worst -> best
+        ranked = ms[f'test_{metric}_mean'].reindex(readouts).dropna() \
+                   .sort_values(ascending=higher_is_better(metric))
+        ci     = ms[f'test_{metric}_ci95'].reindex(ranked.index)
+        colors = [readout_color(r, i) for i, r in enumerate(ranked.index)]
+        ax.barh(range(len(ranked)), ranked.values, color=colors, alpha=0.88, height=0.6)
         ax.errorbar(ranked.values, range(len(ranked)), xerr=ci.values,
                     fmt='none', color='#333', capsize=3, linewidth=1.2)
         ax.set_yticks(range(len(ranked)))
-        ax.set_yticklabels([r.capitalize() for r in ranked.index], fontsize=10)
-        ax.set_xlabel('Test AUC', fontsize=10)
-        ax.set_title(MODEL_LABELS[model], fontsize=12, fontweight='bold')
-        vmin = max(0.4, ranked.min() - 0.05)
-        ax.set_xlim(vmin, min(1.0, ranked.max() + 0.05))
+        ax.set_yticklabels([readout_label(r) for r in ranked.index], fontsize=10)
+        ax.set_xlabel(f'Test {label}', fontsize=10)
+        ax.set_title(model_label(model), fontsize=12, fontweight='bold')
+        if len(ranked):
+            if metric == 'auc':
+                ax.set_xlim(max(0.4, ranked.min() - 0.05), min(1.0, ranked.max() + 0.05))
+            else:
+                span = max(ranked.max() - ranked.min(), 0.05 * abs(ranked.max()), 1e-3)
+                ax.set_xlim(ranked.min() - 0.5 * span, ranked.max() + 0.5 * span)
         ax.xaxis.grid(True, linestyle='--', alpha=0.6)
         ax.set_axisbelow(True)
-        # Annotate values
-        for i, (v, r) in enumerate(zip(ranked.values, ranked.index)):
-            if not np.isnan(v):
-                ax.text(v + 0.003, i, f'{v:.3f}', va='center', fontsize=9)
+        # Annotate values just past the error bar
+        x_lo, x_hi = ax.get_xlim()
+        for i, (v, c) in enumerate(zip(ranked.values, ci.fillna(0).values)):
+            ax.text(v + c + 0.01 * (x_hi - x_lo), i + 0.25, f'{v:.3f}', va='center', fontsize=9)
 
     plt.tight_layout()
     path = os.path.join(out_dir, f'{dataset}_readout_rankings.png')
@@ -315,20 +314,23 @@ def plot_readout_rankings(summary, dataset, out_dir):
 
 
 def plot_pvalue_heatmap(paired, dataset, out_dir):
-    """4-panel heatmap (one per model): readout × readout BH-adjusted p-values."""
+    """One panel per model: readout × readout BH-adjusted p-values."""
     sub = paired[paired['dataset'] == dataset]
     if sub.empty:
         return
+    models = ordered(sub['model'], MODEL_ORDER)
+    readouts = ordered(set(sub['readout_A']) | set(sub['readout_B']), READOUT_ORDER)
+    label = metric_label(sub['metric'].iloc[0])
 
-    fig, axes = plt.subplots(1, len(MODEL_ORDER), figsize=(20, 5))
+    fig, axes = plt.subplots(1, len(models), figsize=(4 * len(models) + 1, 5), squeeze=False)
     fig.suptitle(f'{dataset} — Pairwise Readout Comparison\n'
-                 f'BH-adjusted t-test p-values (test AUC, same seeds)',
+                 f'BH-adjusted t-test p-values (test {label}, same seeds)',
                  fontsize=13, fontweight='bold')
 
-    for ax, model in zip(axes, MODEL_ORDER):
+    for ax, model in zip(axes[0], models):
         ms = sub[sub['model'] == model]
-        mat = np.full((len(READOUT_ORDER), len(READOUT_ORDER)), np.nan)
-        ri  = {r: i for i, r in enumerate(READOUT_ORDER)}
+        mat = np.full((len(readouts), len(readouts)), np.nan)
+        ri  = {r: i for i, r in enumerate(readouts)}
         for _, row in ms.iterrows():
             i, j = ri[row['readout_A']], ri[row['readout_B']]
             mat[i, j] = row['t_pval_bh']
@@ -340,15 +342,15 @@ def plot_pvalue_heatmap(paired, dataset, out_dir):
         np.fill_diagonal(log_mat, 0.0)
 
         im = ax.imshow(log_mat, cmap='YlOrRd', vmin=0, vmax=3, aspect='auto')
-        ax.set_xticks(range(len(READOUT_ORDER)))
-        ax.set_yticks(range(len(READOUT_ORDER)))
-        ax.set_xticklabels([r.capitalize() for r in READOUT_ORDER],
+        ax.set_xticks(range(len(readouts)))
+        ax.set_yticks(range(len(readouts)))
+        ax.set_xticklabels([readout_label(r) for r in readouts],
                            rotation=30, ha='right', fontsize=9)
-        ax.set_yticklabels([r.capitalize() for r in READOUT_ORDER], fontsize=9)
-        ax.set_title(MODEL_LABELS[model], fontsize=11, fontweight='bold')
+        ax.set_yticklabels([readout_label(r) for r in readouts], fontsize=9)
+        ax.set_title(model_label(model), fontsize=11, fontweight='bold')
 
-        for i in range(len(READOUT_ORDER)):
-            for j in range(len(READOUT_ORDER)):
+        for i in range(len(readouts)):
+            for j in range(len(readouts)):
                 v = mat[i, j]
                 txt = '—' if i == j else (f'{v:.3f}' if not np.isnan(v) else 'NaN')
                 sig = '' if i == j or np.isnan(v) else ('*' if v < 0.05 else '')
@@ -370,46 +372,59 @@ def main():
     p = argparse.ArgumentParser(description='Analyse GNN grid experiment results.')
     p.add_argument('--datasets',    nargs='+', default=None,
                    help='Datasets to analyse. Default: all in grid_results.csv')
+    p.add_argument('--models',      nargs='+', default=None,
+                   help='Models to include. Default: all in grid_results.csv')
+    p.add_argument('--regression_metric', default='rmse', choices=list(REGRESSION_METRICS),
+                   help='Metric for regression datasets (binary datasets always use ROC-AUC).')
     p.add_argument('--results_dir', default='./results')
-    p.add_argument('--out_dir',     default='./results/analysis')
+    p.add_argument('--out_dir',     default=None,
+                   help='Default: <results_dir>/analysis')
     args = p.parse_args()
+    out_dir = args.out_dir or os.path.join(args.results_dir, 'analysis')
+    os.makedirs(out_dir, exist_ok=True)
 
-    os.makedirs(args.out_dir, exist_ok=True)
-
-    df = load_results(args.results_dir, args.datasets)
+    df = load_grid_results(args.results_dir, args.datasets)
+    if args.models:
+        df = df[df['model'].isin(args.models)]
     datasets = sorted(df['dataset'].unique())
-    print(f"Loaded {len(df)} runs across datasets: {datasets}")
+    metric_of = {d: analysis_metric(dataset_task_type(df, d), args.regression_metric) for d in datasets}
+    print(f"Loaded {len(df)} runs across datasets: "
+          + ', '.join(f'{d} ({metric_label(metric_of[d])})' for d in datasets))
 
     # ---- Summary table ----
-    summary = compute_summary(df)
-    summary_path = os.path.join(args.out_dir, 'summary.csv')
+    summary = compute_summary(df, metric_of)
+    summary_path = os.path.join(out_dir, 'summary.csv')
     summary.to_csv(summary_path, index=False)
     print(f"\nSummary → {summary_path}")
-    print(summary.to_string(index=False))
+    for d in datasets:
+        m = metric_of[d]
+        cols = ['model', 'readout', 'n_seeds'] + [f'{s}_{m}_{stat}' for s in SPLITS for stat in ('mean', 'std')] + ['gen_gap_mean']
+        print(f"\n{d} ({metric_label(m)}, {'higher' if higher_is_better(m) else 'lower'} is better)")
+        print(summary[summary['dataset'] == d][cols].to_string(index=False))
 
     # ---- Paired tests ----
-    paired = compute_paired_tests(df)
+    paired = compute_paired_tests(df, metric_of)
     if not paired.empty:
-        paired_path = os.path.join(args.out_dir, 'paired_comparisons.csv')
+        paired_path = os.path.join(out_dir, 'paired_comparisons.csv')
         paired.to_csv(paired_path, index=False)
         print(f"\nPaired comparisons → {paired_path}")
 
         sig = paired[paired['significant_bh'] == True]
         print(f"\nSignificant pairs (BH-corrected t-test p < 0.05): {len(sig)} / {len(paired)}")
         if not sig.empty:
-            print(sig[['dataset', 'model', 'readout_A', 'readout_B',
-                        'mean_diff', 'cohen_dz', 't_pval_bh']].to_string(index=False))
+            print(sig[['dataset', 'model', 'metric', 'readout_A', 'readout_B',
+                        'mean_diff', 'better', 'cohen_dz', 't_pval_bh']].to_string(index=False))
 
     # ---- Plots per dataset ----
     for dataset in datasets:
         print(f"\nPlotting {dataset}...")
-        plot_heatmaps(summary, dataset, args.out_dir)
-        plot_bars_and_gap(summary, dataset, args.out_dir)
-        plot_readout_rankings(summary, dataset, args.out_dir)
+        plot_heatmaps(summary, dataset, metric_of[dataset], out_dir)
+        plot_bars_and_gap(summary, dataset, metric_of[dataset], out_dir)
+        plot_readout_rankings(summary, dataset, metric_of[dataset], out_dir)
         if not paired.empty:
-            plot_pvalue_heatmap(paired, dataset, args.out_dir)
+            plot_pvalue_heatmap(paired, dataset, out_dir)
 
-    print(f"\nAll outputs in {args.out_dir}/")
+    print(f"\nAll outputs in {out_dir}/")
 
 
 if __name__ == '__main__':

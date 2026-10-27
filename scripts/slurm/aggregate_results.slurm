@@ -1,7 +1,8 @@
 #!/bin/bash
-# After all grid array jobs finish, run this CPU-only job to aggregate results.
-# Submit with:
-#   sbatch --dependency=afterok:<ARRAY_JOB_ID> scripts/slurm/aggregate_results.slurm
+# After grid jobs finish, run this CPU-only job to aggregate *_metrics.json
+# into grid_results.csv / grid_summary.csv. Submit from the repo root:
+#   sbatch --dependency=afterany:<JOB_IDS> scripts/slurm/aggregate_results.slurm [results_dir]
+# (Cheap enough to run directly: python scripts/aggregate_results.py --results_dir <dir>)
 
 #SBATCH --job-name=gnn_aggregate
 #SBATCH --partition=cpu
@@ -10,33 +11,11 @@
 #SBATCH --time=0:30:00
 #SBATCH --output=logs/aggregate_%j.out
 
+set -eo pipefail
 module load conda/latest
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate graph-pooling
+set -u
 
-cd /work/pi_annagreen_umass_edu/Isha/graph-pooling/gnn_readout_bio
-
-python - <<'EOF'
-import os, json, pandas as pd
-from itertools import product
-
-results_dir = 'results'
-rows = []
-for f in os.listdir(results_dir):
-    if f.endswith('_metrics.json'):
-        with open(os.path.join(results_dir, f)) as fh:
-            rows.append(json.load(fh))
-
-df = pd.DataFrame(rows)
-df.to_csv(os.path.join(results_dir, 'grid_results.csv'), index=False)
-
-numeric = ['train_auc', 'val_auc', 'test_auc']
-df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
-summary = (
-    df.groupby(['dataset', 'model', 'readout'])[numeric]
-    .agg(['mean', 'std'])
-    .round(4)
-)
-summary.columns = [f"{c}_{s}" for c, s in summary.columns]
-summary.to_csv(os.path.join(results_dir, 'grid_summary.csv'))
-print(summary.to_string())
-EOF
+cd "$SLURM_SUBMIT_DIR"
+python scripts/aggregate_results.py --results_dir "${1:-results}"

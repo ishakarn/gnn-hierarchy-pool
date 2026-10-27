@@ -1,53 +1,40 @@
-"""Evaluation utilities for binary molecular classification."""
+"""Evaluation utilities: predictions, task metrics, and metric files."""
 
 import json
-import warnings
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 
 
-def evaluate_auc(model, loader, device) -> float:
-    """Compute ROC-AUC on a DataLoader.
-
-    Returns float('nan') with a warning if a split contains only one class
-    (e.g. a very small test set), rather than crashing.
-
-    Probabilities are computed via sigmoid on raw logits before scoring.
-    """
+def predict(model, loader, device, task):
+    """(y_true, y_pred), each [N, num_tasks]; y_pred = task.predict(model output), NaN = missing label."""
     model.eval()
-    all_probs, all_labels = [], []
+    all_preds, all_labels = [], []
 
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(device)
-            out = model(batch)   # [batch_size, num_tasks] or [batch_size, 1]
-            y   = batch.y.float()
+            y   = batch.y.float().view(batch.num_graphs, -1)
+            out = model(batch).view(batch.num_graphs, -1)
 
-            # Squeeze single-task dimension so shapes are [batch_size]
-            if y.dim() == 2 and y.shape[1] == 1:
-                y = y.squeeze(-1)
-            if out.dim() == 2 and out.shape[1] == 1:
-                out = out.squeeze(-1)
+            all_preds.append(task.predict(out).cpu().numpy())
+            all_labels.append(y.cpu().numpy())
 
-            probs = torch.sigmoid(out)
+    return np.concatenate(all_labels), np.concatenate(all_preds)
 
-            # Skip NaN labels (future multi-task datasets may have missing values)
-            valid = ~torch.isnan(y)
-            all_probs.append(probs[valid].cpu().numpy())
-            all_labels.append(y[valid].cpu().numpy())
 
-    all_probs  = np.concatenate(all_probs)
-    all_labels = np.concatenate(all_labels)
-
-    if len(np.unique(all_labels)) < 2:
-        warnings.warn(
-            "Split contains only one class — ROC-AUC undefined, returning NaN."
-        )
-        return float('nan')
-
-    return float(roc_auc_score(all_labels, all_probs))
+def evaluate(model, loader, device, task) -> dict:
+    """{metric: value} for every metric of `task`; multi-task metrics are the mean over tasks."""
+    y_true, y_pred = predict(model, loader, device, task)
+    scores = {}
+    for name, fn in task.metrics.items():
+        per_task = []
+        for t in range(y_true.shape[1]):
+            valid = ~np.isnan(y_true[:, t])
+            per_task.append(fn(y_true[valid, t], y_pred[valid, t]))
+        per_task = [v for v in per_task if v == v]
+        scores[name] = float(np.mean(per_task)) if per_task else float('nan')
+    return scores
 
 
 def save_metrics(metrics: dict, path: str):

@@ -1,4 +1,4 @@
-"""Run one experiment: one dataset / model / readout / seed combination."""
+"""Run one experiment: one dataset / model / readout / seed combination (binary or regression)."""
 
 import os
 import sys
@@ -9,16 +9,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 
 from src.utils import set_seed, get_device, load_config, merge_configs
-from src.data import load_dataset
+from src.data import load_dataset, feature_dims
 from src.splits import get_or_create_split
 from src.models import build_model, MODEL_REGISTRY
-from src.readouts import get_readout   # noqa: imported for validation
+from src.readouts import READOUTS
 from src.train import train
 from src.evaluate import save_metrics
+from src.tasks import build_task
 
 
 VALID_MODELS  = list(MODEL_REGISTRY.keys()) + ['chemprop']
-VALID_READOUTS = ['mean', 'sum', 'max', 'attention', 'selfattention']
+VALID_READOUTS = list(READOUTS)
 
 
 def parse_args():
@@ -52,7 +53,9 @@ def main():
 
     # ---- Data ----
     dataset, meta = load_dataset(cfg['dataset'], root=cfg.get('data_root', './data'))
-    print(f"Dataset: {cfg['dataset']}  |  {len(dataset)} molecules  |  {meta['num_tasks']} task(s)")
+    cfg['task_type'] = meta['task_type']
+    print(f"Dataset: {cfg['dataset']}  |  {len(dataset)} molecules  |  "
+          f"{meta['num_tasks']} task(s)  |  {meta['task_type']}")
 
     # ---- Scaffold split ----
     train_idx, val_idx, test_idx = get_or_create_split(
@@ -63,16 +66,20 @@ def main():
         train_frac=cfg.get('train_frac', 0.8),
         val_frac=cfg.get('val_frac',   0.1),
         test_frac=cfg.get('test_frac', 0.1),
+        task_type=cfg['task_type'],
     )
     print(f"Split  train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}")
 
     # ---- Model ----
+    if args.model == 'chemprop' and cfg['task_type'] != 'binary':
+        raise SystemExit(f"Chemprop baseline supports binary datasets only; {cfg['dataset']} is {cfg['task_type']}")
     if args.model == 'chemprop':
         from src.chemprop_model import build_chemprop, train_chemprop
         model = build_chemprop(cfg, cfg['readout'], num_tasks=meta['num_tasks'])
     else:
-        num_node_features = dataset[0].x.shape[1]
-        model = build_model(args.model, num_node_features, cfg, num_tasks=meta['num_tasks'])
+        num_node_features, num_edge_features = feature_dims(dataset)
+        model = build_model(args.model, num_node_features, cfg, num_tasks=meta['num_tasks'],
+                            num_edge_features=num_edge_features)
         model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model: {args.model}  |  readout={args.readout}  |  params={n_params:,}")
@@ -101,6 +108,7 @@ def main():
         'model':     args.model,
         'readout':   args.readout,
         'seed':      args.seed,
+        'task_type': cfg['task_type'],
         'split':     'scaffold',
         'checkpoint': checkpoint_path,
         # config snapshot
@@ -112,12 +120,13 @@ def main():
     })
     save_metrics(results, metrics_path)
 
+    metric = build_task(cfg).primary
     print(
         f"\n{'='*60}\n"
         f"  {run_name}\n"
-        f"  train_auc={results['train_auc']:.4f}  "
-        f"val_auc={results['val_auc']:.4f}  "
-        f"test_auc={results['test_auc']:.4f}  "
+        f"  train_{metric}={results[f'train_{metric}']:.4f}  "
+        f"val_{metric}={results[f'val_{metric}']:.4f}  "
+        f"test_{metric}={results[f'test_{metric}']:.4f}  "
         f"(best epoch {results['best_epoch']})\n"
         f"  Saved → {metrics_path}\n"
         f"{'='*60}"

@@ -8,8 +8,8 @@
 #   N=$(wc -l < combos.txt)
 #   sbatch --array=1-$N scripts/slurm/run_grid_array.slurm
 #
-# Default grid: BBBP+BACE × GCN+GIN+GAT+SAGE × mean+sum+max+attn × seeds 0,1,2
-# = 2 × 4 × 4 × 3 = 96 jobs
+# Default grid (gen_combos.py): BBBP+BACE × GIN+GINE × 5 readouts × seeds 0-9
+# = 2 × 2 × 5 × 10 = 200 jobs — cap concurrency, e.g. --array=1-200%20
 
 #SBATCH --job-name=gnn_grid
 #SBATCH --partition=gpu-preempt
@@ -23,9 +23,10 @@
 mkdir -p logs
 
 module load conda/latest
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate graph-pooling
 
-cd /work/pi_annagreen_umass_edu/Isha/graph-pooling/gnn_readout_bio
+cd "$SLURM_SUBMIT_DIR"
 
 # Read the line corresponding to this array task (1-indexed)
 LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" combos.txt)

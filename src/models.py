@@ -1,9 +1,9 @@
-"""GNN encoders (GCN, GIN, GAT, GraphSAGE) + readout + MLP classifier."""
+"""GNN encoders (GCN, GIN, GINE, GAT, GraphSAGE, GCN-P) + readout + MLP classifier."""
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINConv, GATConv, SAGEConv
+from torch_geometric.nn import GCNConv, GINConv, GINEConv, GATConv, SAGEConv
 
 from src.readouts import get_readout
 
@@ -124,6 +124,55 @@ class GINModel(nn.Module):
         return self.classifier(x)
 
 
+class GINEModel(nn.Module):
+    """GIN with edge features (GINEConv); the only encoder here that reads edge_attr.
+    Without edge features it uses zero edge embeddings."""
+
+    def __init__(
+        self,
+        num_node_features: int,
+        hidden_dim: int,
+        num_layers: int,
+        dropout: float,
+        readout_type: str,
+        num_tasks: int = 1,
+        num_edge_features: int = 0,
+        **_,
+    ):
+        super().__init__()
+        self.num_edge_features = num_edge_features
+        self.node_proj = nn.Linear(num_node_features, hidden_dim)
+        self.edge_proj = nn.Linear(max(num_edge_features, 1), hidden_dim)
+        self.convs = nn.ModuleList([
+            GINEConv(nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+            ))
+            for _ in range(num_layers)
+        ])
+        self.dropout = dropout
+        self.readout = get_readout(readout_type, hidden_dim)
+        self.classifier = _mlp_head(hidden_dim, hidden_dim // 2, num_tasks, dropout)
+
+    def forward(self, data):
+        x, edge_index, batch = data.x.float(), data.edge_index, data.batch
+        x = F.relu(self.node_proj(x))
+
+        edge_attr = getattr(data, 'edge_attr', None)
+        if edge_attr is not None and self.num_edge_features > 0:
+            e = F.relu(self.edge_proj(edge_attr.float()))
+        else:
+            e = F.relu(self.edge_proj(x.new_zeros(edge_index.size(1), 1)))
+
+        for conv in self.convs:
+            x = F.relu(conv(x, edge_index, e))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.readout(x, batch)
+        return self.classifier(x)
+
+
 class GATModel(nn.Module):
     def __init__(
         self,
@@ -195,16 +244,19 @@ class GCNPModel(nn.Module):
         x = torch.cat(readout_pyramid, dim=1)
         return self.classifier(x)           # [num_graphs, num_tasks]
 
+
 MODEL_REGISTRY = {
     'gcn':       GCNModel,
     'graphsage': GraphSAGEModel,
     'gin':       GINModel,
+    'gine':      GINEModel,
     'gat':       GATModel,
-    'gcnp':      GCNPModel
+    'gcnp':      GCNPModel,
 }
 
 
-def build_model(model_name: str, num_node_features: int, cfg: dict, num_tasks: int = 1) -> nn.Module:
+def build_model(model_name: str, num_node_features: int, cfg: dict, num_tasks: int = 1,
+                num_edge_features: int = 0) -> nn.Module:
     """Instantiate a model from the registry using a config dict."""
     key = model_name.lower()
     if key not in MODEL_REGISTRY:
@@ -220,4 +272,5 @@ def build_model(model_name: str, num_node_features: int, cfg: dict, num_tasks: i
         readout_type=cfg['readout'],
         num_tasks=num_tasks,
         num_heads=cfg.get('num_heads', 4),
+        num_edge_features=num_edge_features,
     )

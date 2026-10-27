@@ -51,6 +51,9 @@ class GatedAttentionReadout(nn.Module):
         return out  # [num_graphs, hidden_dim]
 
 
+READOUTS = ('mean', 'sum', 'max', 'attention', 'selfattention')
+
+
 def get_readout(readout_type: str, hidden_dim: int = None):
     """Return a readout callable or nn.Module.
 
@@ -76,6 +79,6 @@ def get_readout(readout_type: str, hidden_dim: int = None):
     else:
         raise ValueError(
             f"Unknown readout '{readout_type}'. "
-            "Choose from: mean, sum, max, attention"
+            f"Choose from: {', '.join(READOUTS)}"
         )
         
