@@ -10,6 +10,11 @@
 #
 # Default grid (gen_combos.py): BBBP+BACE × GIN+GINE × 5 readouts × seeds 0-9
 # = 2 × 2 × 5 × 10 = 200 jobs — cap concurrency, e.g. --array=1-200%20
+#
+# SPECTRA splits: generate combos with
+#   python scripts/slurm/gen_combos.py --split spectra --sps ... --split_idxs ...
+# which adds SP and split-replicate columns (5 and 6); this script then passes
+# --split spectra --sp <SP> --split_idx <K> to run_single.py.
 
 #SBATCH --job-name=gnn_grid
 #SBATCH --partition=gpu-preempt
@@ -34,14 +39,23 @@ DATASET=$(echo "$LINE" | cut -f1)
 MODEL=$(echo   "$LINE" | cut -f2)
 READOUT=$(echo "$LINE" | cut -f3)
 SEED=$(echo    "$LINE" | cut -f4)
+SP=$(echo      "$LINE" | cut -f5)    # empty for scaffold combos
+SPLIT_IDX=$(echo "$LINE" | cut -f6)
 
 CONFIG="configs/${DATASET,,}.yaml"
 
-echo "Task $SLURM_ARRAY_TASK_ID: $DATASET / $MODEL / $READOUT / seed $SEED"
+SPLIT_ARGS=()
+if [ -n "$SP" ]; then
+    SPLIT_ARGS=(--split spectra --sp "$SP" --split_idx "$SPLIT_IDX")
+    echo "Task $SLURM_ARRAY_TASK_ID: $DATASET / $MODEL / $READOUT / seed $SEED / SP $SP split $SPLIT_IDX"
+else
+    echo "Task $SLURM_ARRAY_TASK_ID: $DATASET / $MODEL / $READOUT / seed $SEED"
+fi
 
 python scripts/run_single.py \
     --config   "$CONFIG" \
     --model    "$MODEL" \
     --readout  "$READOUT" \
     --seed     "$SEED" \
+    "${SPLIT_ARGS[@]}" \
     --output_dir results/

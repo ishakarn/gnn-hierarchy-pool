@@ -67,14 +67,51 @@ to `results/figures/individual/<DATASET>/`:
 | `modetrace_matched` / `modetrace_ood` | test metric vs p, one panel per perturbation |
 | `modetrace_drop` | relative drop at p = 1 (red = worse, blue = better; n/a where a model never reads edge features) |
 
+## SPECTRA splits
+
+Instead of the scaffold split, runs can use the SPECTRA Tanimoto splits from
+[SPECTRA_evaluation](https://github.com/vynkdo/SPECTRA_evaluation), which
+vary train–test similarity via a SPECTRA parameter (SP, 0.00–1.00).
+
+**1. Clone SPECTRA_evaluation next to this repo** (the configs default to
+`spectra_repo: ../SPECTRA_evaluation`, resolved relative to this repo's root):
+
+```bash
+cd <parent_of_this_repo>
+git clone https://github.com/vynkdo/SPECTRA_evaluation
+```
+
+If it lives elsewhere, edit `spectra_repo` in `configs/<dataset>.yaml` or pass
+`--spectra_repo /path/to/SPECTRA_evaluation`.
+
+**2. Run with `--split spectra`:**
+
+```bash
+# One run: SP = 0.30, split replicate 0
+python scripts/run_single.py --config configs/bbbp.yaml \
+    --model gin --readout mean --seed 0 \
+    --split spectra --sp 0.30 --split_idx 0
+
+# Grid over SP values and split replicates
+python scripts/run_grid.py --datasets BBBP BACE --models gin gine \
+    --readouts mean attention --seeds 0 \
+    --split spectra --sps 0.00 0.10 0.20 0.30 --split_idxs 0 1 2
+```
+
+Graphs are built from SPECTRA's curated CSVs (not PyG's MoleculeNet copy), so
+split indices line up with molecules. Splits with fewer than `min_test_size`
+(default 20) test molecules, or with single-class val/test sets, are skipped:
+their metrics file has `"status": "skipped"` and a `skip_reason`. In practice
+this keeps roughly SP ≤ 0.30 for BBBP and BACE.
+
 ## Project layout
 
 ```
 configs/            YAML config per dataset
 docs/               protocols (hyperparameter sweep)
 src/
-  data.py           MoleculeNet loader + dataset registry (task_type per dataset)
-  splits.py         seeded scaffold split (cached to data/splits/) + k-fold CV
+  data.py           MoleculeNet loader + dataset registry (task_type per dataset) + curated-CSV loader (SPECTRA)
+  splits.py         seeded scaffold split (cached to data/splits/), ModeTrace k-fold CV, SPECTRA split loader
   tasks.py          binary vs regression: loss, prediction transform, metrics
   models.py         GIN / GINE (and legacy GCN / GAT / GraphSAGE / GCN-P)
   readouts.py       mean / sum / max / attention / selfattention
@@ -82,6 +119,7 @@ src/
   evaluate.py       predictions and task metrics
   chemprop_model.py Chemprop D-MPNN baseline (binary only)
   results.py        shared helpers for the analysis scripts
+  utils.py          seeding, device, config I/O, SPECTRA paths
   modetrace/        ModeTrace (below)
 scripts/            run_single, run_grid, aggregate/analyze/plot, modetrace/, slurm/
 ```

@@ -119,6 +119,11 @@ def load_grid_results(results_dir: str, datasets=None) -> pd.DataFrame:
     df['dataset'] = df['dataset'].str.upper()
     if datasets:
         df = df[df['dataset'].isin([d.upper() for d in datasets])].copy()
+    if 'status' in df.columns:
+        df = df[df['status'] != 'skipped'].copy()      # SPECTRA splits run_single.py skipped
+    if 'sp' in df.columns and df['sp'].nunique() > 1:
+        raise ValueError(f"{results_dir} mixes SPECTRA parameters {sorted(float(v) for v in df['sp'].dropna().unique())}; "
+                         "these scripts would average over them. Analyze one SP at a time.")
 
     registry_type = df['dataset'].map(lambda d: DATASET_REGISTRY.get(d, {}).get('task_type', 'binary'))
     df['task_type'] = df['task_type'].fillna(registry_type) if 'task_type' in df.columns else registry_type

@@ -16,10 +16,18 @@ import pandas as pd
 
 
 def grid_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Mean/std of every {split}_{metric} column per dataset/model/readout."""
+    """Mean/std of every {split}_{metric} column per dataset/model/readout (and SPECTRA sp).
+
+    SPECTRA splits that run_single.py skipped are counted and left out.
+    """
+    if 'status' in df.columns and (df['status'] == 'skipped').any():
+        print(f"Skipped SPECTRA splits (see skip_reason in grid_results.csv): {(df['status'] == 'skipped').sum()}")
     numeric = [c for c in df.columns if c.startswith(('train_', 'val_', 'test_'))]
     df = df.assign(**{c: pd.to_numeric(df[c], errors='coerce') for c in numeric})
-    summary = (df.groupby(['dataset', 'model', 'readout'])[numeric]
+    group_cols = ['dataset', 'model', 'readout']
+    if 'sp' in df.columns and df['sp'].notna().any():
+        group_cols.append('sp')
+    summary = (df.groupby(group_cols, dropna=False)[numeric]
                .agg(['mean', 'std']).round(4).dropna(axis=1, how='all'))
     summary.columns = [f"{c}_{s}" for c, s in summary.columns]
     return summary

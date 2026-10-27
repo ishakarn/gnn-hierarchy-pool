@@ -21,3 +21,9 @@ train_frac: 0.8
 val_frac: 0.1
 test_frac: 0.1
 split_dir: ./data/splits
+
+# --- SPECTRA (used when split: spectra) ---
+spectra_repo: ../SPECTRA_evaluation      # path to the SPECTRA_evaluation repo
+curated_csv: datasets/curated_datasets/bace.csv                    # relative to spectra_repo
+spectra_split_dir: splits_data/chemprop_data/spectra_tanimoto/bace # relative to spectra_repo
+label_cols: [Class]
