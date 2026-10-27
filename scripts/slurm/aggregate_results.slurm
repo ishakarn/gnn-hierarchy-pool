@@ -30,9 +30,19 @@ df = pd.DataFrame(rows)
 df.to_csv(os.path.join(results_dir, 'grid_results.csv'), index=False)
 
 numeric = ['train_auc', 'val_auc', 'test_auc']
+for c in numeric:
+    if c not in df.columns:
+        df[c] = None
 df[numeric] = df[numeric].apply(pd.to_numeric, errors='coerce')
+
+# SPECTRA runs: also group by SP, and report skipped splits
+group_cols = ['dataset', 'model', 'readout']
+if 'sp' in df.columns and df['sp'].notna().any():
+    group_cols.append('sp')
+if 'status' in df.columns:
+    print(f"Skipped runs: {(df['status'] == 'skipped').sum()}")
 summary = (
-    df.groupby(['dataset', 'model', 'readout'])[numeric]
+    df.groupby(group_cols, dropna=False)[numeric]
     .agg(['mean', 'std'])
     .round(4)
 )

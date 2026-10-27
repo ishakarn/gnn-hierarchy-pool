@@ -182,3 +182,67 @@ def get_or_create_split(
     print(f"Saved scaffold split ({len(train_idx)}/{len(val_idx)}/{len(test_idx)}) to {split_path}")
 
     return train_idx, val_idx, test_idx
+
+
+# ── SPECTRA splits ──────────────────────────────────────────────────────────
+
+class SpectraSplitSkipped(Exception):
+    """Raised when a SPECTRA split is missing or fails the quality checks."""
+
+
+def _has_both_classes(idxs, labels) -> bool:
+    """True if every task has at least one 0 and one 1 among `idxs`."""
+    import numpy as np
+    sub = np.asarray(labels, dtype=float)[idxs]
+    if sub.ndim == 1:
+        sub = sub[:, None]
+    for t in range(sub.shape[1]):
+        col = sub[:, t]
+        col = col[~np.isnan(col)]
+        if len(np.unique(col)) < 2:
+            return False
+    return True
+
+
+def load_spectra_split(
+    split_dir: str,
+    sp: float,
+    split_idx: int,
+    labels=None,
+    min_test_size: int = 20,
+) -> tuple:
+    """Load one SPECTRA split from SPECTRA_evaluation's chemprop_data JSONs.
+
+    Reads `<split_dir>/SP_<sp:.2f>/data_<split_idx>.json`, whose indices refer
+    to rows of the curated CSV (see src.data.load_curated_csv).
+
+    High SPECTRA parameters leave very small and often single-class val/test
+    sets, where ROC-AUC is undefined and early stopping never fires. Such
+    splits are rejected with SpectraSplitSkipped rather than trained on.
+
+    Args:
+        split_dir:     e.g. .../splits_data/chemprop_data/spectra_tanimoto/bbbp
+        sp:            SPECTRA parameter (0.00 – 1.00, step 0.05)
+        split_idx:     replicate number (0, 1, 2)
+        labels:        per-molecule labels, shape (N,) or (N, num_tasks).
+                       When given, val and test must contain both classes.
+        min_test_size: minimum number of test molecules (0 disables the check).
+    """
+    path = os.path.join(split_dir, f"SP_{sp:.2f}", f"data_{split_idx}.json")
+    if not os.path.exists(path):
+        raise SpectraSplitSkipped(f"split file not found: {path}")
+
+    with open(path) as f:
+        splits = json.load(f)[0]
+    train_idx, val_idx, test_idx = splits['train'], splits['val'], splits['test']
+
+    if len(test_idx) < min_test_size:
+        raise SpectraSplitSkipped(
+            f"test set has {len(test_idx)} molecules (< min_test_size={min_test_size})"
+        )
+    if labels is not None:
+        for name, idxs in [('val', val_idx), ('test', test_idx)]:
+            if not idxs or not _has_both_classes(idxs, labels):
+                raise SpectraSplitSkipped(f"{name} set does not contain both classes")
+
+    return train_idx, val_idx, test_idx

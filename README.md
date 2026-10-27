@@ -70,14 +70,51 @@ Results land in `results/`:
 - `grid_results.csv` — all runs in one table
 - `grid_summary.csv` — mean/std test AUC grouped by dataset/model/readout
 
+## SPECTRA splits
+
+Instead of the scaffold split, runs can use the SPECTRA Tanimoto splits from
+[SPECTRA_evaluation](https://github.com/vynkdo/SPECTRA_evaluation), which
+vary train–test similarity via a SPECTRA parameter (SP, 0.00–1.00).
+
+**1. Clone SPECTRA_evaluation next to this repo** (the configs default to
+`spectra_repo: ../SPECTRA_evaluation`, resolved relative to this repo's root):
+
+```bash
+cd <parent_of_this_repo>
+git clone https://github.com/vynkdo/SPECTRA_evaluation
+```
+
+If it lives elsewhere, edit `spectra_repo` in `configs/<dataset>.yaml` or pass
+`--spectra_repo /path/to/SPECTRA_evaluation`.
+
+**2. Run with `--split spectra`:**
+
+```bash
+# One run: SP = 0.30, split replicate 0
+python scripts/run_single.py --config configs/bbbp.yaml \
+    --model gcn --readout mean --seed 0 \
+    --split spectra --sp 0.30 --split_idx 0
+
+# Grid over SP values and split replicates
+python scripts/run_grid.py --datasets BBBP BACE --models gcn gin \
+    --readouts mean attention --seeds 0 \
+    --split spectra --sps 0.00 0.10 0.20 0.30 --split_idxs 0 1 2
+```
+
+Graphs are built from SPECTRA's curated CSVs (not PyG's MoleculeNet copy), so
+split indices line up with molecules. Splits with fewer than `min_test_size`
+(default 20) test molecules, or with single-class val/test sets, are skipped:
+their metrics file has `"status": "skipped"` and a `skip_reason`. In practice
+this keeps roughly SP ≤ 0.30 for BBBP and BACE.
+
 ## Project layout
 
 ```
 gnn_readout_bio/
   configs/          YAML configs per dataset
   src/
-    data.py         MoleculeNet loader + SMILES extraction
-    splits.py       Bemis-Murcko scaffold split (saved to disk)
+    data.py         MoleculeNet loader + curated-CSV loader (SPECTRA)
+    splits.py       Bemis-Murcko scaffold split + SPECTRA split loader
     readouts.py     mean / sum / max / attention readouts
     models.py       GCN / GIN / GAT / GraphSAGE
     train.py        training loop with early stopping
