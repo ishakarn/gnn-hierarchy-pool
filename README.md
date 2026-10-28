@@ -1,119 +1,195 @@
-# GNN Readout Benchmark — Molecular Classification
+# GNN Readout Benchmark — Molecular Property Prediction
 
-Study how GNN architecture and graph-level readout interact on MoleculeNet binary
-classification benchmarks (BBBP, BACE; ClinTox and HIV are registry-ready).
+Study how GNN architecture and graph-level readout interact on MoleculeNet
+benchmarks — binary classification (BBBP, BACE, ClinTox; HIV is registry-ready)
+and regression (ESOL, FreeSolv, Lipophilicity) — and which modes of information
+each model relies on (ModeTrace). The hyperparameter sweep is specified in
+[docs/hparam_sweep_protocol.ipynb](docs/hparam_sweep_protocol.ipynb).
 
 ## Setup (Unity HPCC)
 
 ```bash
 module load conda/latest
 conda activate graph-pooling
-cd <your_working_directory>
 ```
 
-All required packages (PyTorch, PyG, RDKit, scikit-learn) are already installed
-in the `graph-pooling` environment.
+All required packages (PyTorch, PyG, RDKit, scikit-learn) are installed in the
+`graph-pooling` environment. Run training through SLURM, not on a login node.
 
-## Quick smoke test
+## Running
 
 ```bash
-python scripts/run_single.py \
-    --config configs/bbbp.yaml \
-    --model gcn --readout mean --seed 0 --epochs 2
+# one run (add --epochs 2 for a smoke test)
+python scripts/run_single.py --config configs/bbbp.yaml --model gin --readout mean --seed 0
+
+# a grid, sequentially
+python scripts/run_grid.py --datasets BBBP ESOL --models gin gine \
+    --readouts mean sum max attention --seeds 0 1 2
 ```
 
-## Single run
+On the cluster (submit from the repo root; logs go to `logs/`):
 
 ```bash
-python scripts/run_single.py \
-    --config configs/bbbp.yaml \
-    --model gcn --readout mean --seed 0
-
-python scripts/run_single.py \
-    --config configs/bace.yaml \
-    --model gat --readout attention --seed 1
+mkdir -p logs
+sbatch scripts/slurm/smoke_test.slurm         # 2 epochs on every dataset + ModeTrace
+bash scripts/slurm/submit_base.sh             # one GPU job per dataset -> results/base/<DATASET>/
+bash scripts/slurm/submit_base.sh ESOL LIPO   # or a subset
 ```
 
-## Full grid (local — sequential)
+`submit_base.sh` runs GIN/GINE × all readouts × seeds 0–2 (edit
+`scripts/slurm/run_base.slurm` to change the grid) and queues
+`aggregate_results.py` after the jobs. Jobs are requeue-safe: finished runs are
+skipped. For one job per run instead, use `scripts/slurm/gen_combos.py` +
+`run_grid_array.slurm` (default grid: 200 jobs; cap concurrency, e.g. `--array=1-200%20`).
+
+Each run writes `<DATASET>_<model>_<readout>_seed<N>_metrics.json`;
+`aggregate_results.py` collects them into `grid_results.csv` and `grid_summary.csv`.
+
+## Analysis and figures
 
 ```bash
-python scripts/run_grid.py \
-    --datasets BBBP BACE \
-    --models gcn gin gat graphsage \
-    --readouts mean sum max attention \
-    --seeds 0 1 2
+python scripts/aggregate_results.py --results_dir results/base
+python scripts/analyze_results.py   --results_dir results/base --models gin gine   # stats + plots -> results/base/analysis/
+python scripts/plot_results.py      --results_dir results/base --models gin gine --datasets BBBP ESOL
+python scripts/plot_datasets.py     --results_dir results/base --modetrace_dir results/modetrace
+python scripts/make_dataset_card.py --datasets BACE ESOL
 ```
 
-## Full grid on HPCC (recommended)
+Every script scores each dataset on its own metric (ROC-AUC for binary, RMSE for
+regression; `--regression_metric mae|r2` to switch). `plot_datasets.py` writes
+all datasets side by side to `results/figures/combined/` and one set per dataset
+to `results/figures/individual/<DATASET>/`:
 
-Each combination is one 1-GPU preemptable job — 96 jobs for the default grid.
+| Figure | Shows |
+|--------|-------|
+| `benchmark_bars` | test metric per readout, bars per model, ± 95% CI over seeds |
+| `benchmark_ranking` | model·readout × dataset heatmap, coloured by within-dataset score, with mean rank |
+| `modetrace_matched` / `modetrace_ood` | test metric vs p, one panel per perturbation |
+| `modetrace_drop` | relative drop at p = 1 (red = worse, blue = better; n/a where a model never reads edge features) |
+
+## SPECTRA splits
+
+Instead of the scaffold split, runs can use the SPECTRA Tanimoto splits from
+[SPECTRA_evaluation](https://github.com/vynkdo/SPECTRA_evaluation), which
+vary train–test similarity via a SPECTRA parameter (SP, 0.00–1.00).
+
+**1. Clone SPECTRA_evaluation next to this repo** (the configs default to
+`spectra_repo: ../SPECTRA_evaluation`, resolved relative to this repo's root):
 
 ```bash
-# 1. Generate the combo list
-python scripts/slurm/gen_combos.py
-
-# 2. Preview
-wc -l combos.txt          # should be 96
-head -5 combos.txt
-
-# 3. Submit job array
-N=$(wc -l < combos.txt)
-sbatch --array=1-$N scripts/slurm/run_grid_array.slurm
-
-# 4. After all jobs finish, aggregate
-# (or add --dependency=afterok:<ARRAY_JOB_ID>)
-sbatch scripts/slurm/aggregate_results.slurm
+cd <parent_of_this_repo>
+git clone https://github.com/vynkdo/SPECTRA_evaluation
 ```
 
-Results land in `results/`:
-- `<dataset>_<model>_<readout>_seed<N>_metrics.json` — one file per run
-- `grid_results.csv` — all runs in one table
-- `grid_summary.csv` — mean/std test AUC grouped by dataset/model/readout
+If it lives elsewhere, edit `spectra_repo` in `configs/<dataset>.yaml` or pass
+`--spectra_repo /path/to/SPECTRA_evaluation`.
+
+**2. Run with `--split spectra`:**
+
+```bash
+# One run: SP = 0.30, split replicate 0
+python scripts/run_single.py --config configs/bbbp.yaml \
+    --model gin --readout mean --seed 0 \
+    --split spectra --sp 0.30 --split_idx 0
+
+# Grid over SP values and split replicates
+python scripts/run_grid.py --datasets BBBP BACE --models gin gine \
+    --readouts mean attention --seeds 0 \
+    --split spectra --sps 0.00 0.10 0.20 0.30 --split_idxs 0 1 2
+```
+
+Graphs are built from SPECTRA's curated CSVs (not PyG's MoleculeNet copy), so
+split indices line up with molecules. Splits with fewer than `min_test_size`
+(default 20) test molecules, or with single-class val/test sets, are skipped:
+their metrics file has `"status": "skipped"` and a `skip_reason`. In practice
+this keeps roughly SP ≤ 0.30 for BBBP and BACE.
 
 ## Project layout
 
 ```
-gnn_readout_bio/
-  configs/          YAML configs per dataset
-  src/
-    data.py         MoleculeNet loader + SMILES extraction
-    splits.py       Bemis-Murcko scaffold split (saved to disk)
-    readouts.py     mean / sum / max / attention readouts
-    models.py       GCN / GIN / GAT / GraphSAGE
-    train.py        training loop with early stopping
-    evaluate.py     ROC-AUC computation
-    utils.py        seeding, device, config I/O
-  scripts/
-    run_single.py   one experiment
-    run_grid.py     sequential grid (local use)
-    slurm/          Unity HPCC job scripts
-  results/          output directory
-  data/             downloaded datasets + split index files
+configs/            YAML config per dataset
+docs/               protocols (hyperparameter sweep)
+src/
+  data.py           MoleculeNet loader + dataset registry (task_type per dataset) + curated-CSV loader (SPECTRA)
+  splits.py         seeded scaffold split (cached to data/splits/), ModeTrace k-fold CV, SPECTRA split loader
+  tasks.py          binary vs regression: loss, prediction transform, metrics
+  models.py         GIN / GINE (and legacy GCN / GAT / GraphSAGE / GCN-P)
+  readouts.py       mean / sum / max / attention / selfattention
+  train.py          training loop with early stopping
+  evaluate.py       predictions and task metrics
+  chemprop_model.py Chemprop D-MPNN baseline (binary only)
+  results.py        shared helpers for the analysis scripts
+  utils.py          seeding, device, config I/O, SPECTRA paths
+  modetrace/        ModeTrace (below)
+scripts/            run_single, run_grid, aggregate/analyze/plot, modetrace/, slurm/
 ```
 
-## Models & Readouts
+## Models and readouts
 
-| Model      | Key layer  | Notes                                      |
-|------------|------------|--------------------------------------------|
-| GCN        | GCNConv    | 3 layers, ReLU, dropout                    |
-| GIN        | GINConv    | MLP inside each layer, BatchNorm, train_eps|
-| GAT        | GATConv    | 4 heads, head_dim = hidden_dim/heads, ELU  |
-| GraphSAGE  | SAGEConv   | 3 layers, ReLU, dropout                    |
+| Model | Key layer | Notes |
+|-------|-----------|-------|
+| GIN   | GINConv   | MLP inside each layer, BatchNorm, train_eps |
+| GINE  | GINEConv  | GIN + edge features (the only edge-aware model) |
 
-| Readout   | Implementation                                               |
-|-----------|--------------------------------------------------------------|
-| mean      | `global_mean_pool`                                           |
-| sum       | `global_add_pool`                                            |
-| max       | `global_max_pool`                                            |
-| attention | learnable gate → per-graph softmax → weighted sum of nodes   |
+GCN, GAT, GraphSAGE and GCN-P remain in `src/models.py` but are no longer part of the study.
 
-## Adding a new dataset (ClinTox / HIV)
+| Readout | Implementation |
+|---------|----------------|
+| mean / sum / max | `global_mean_pool` / `global_add_pool` / `global_max_pool` |
+| attention | learnable gate → per-graph softmax → weighted sum of nodes |
+| selfattention | single-head self-attention read at the first node; leaks the label on BBBP, do not use |
 
-1. Add entry to `DATASET_REGISTRY` in `src/data.py`.
-2. Copy a config YAML and set `dataset:` and `batch_size:`.
-3. Add to `DATASET_TO_CONFIG` in `scripts/run_grid.py` and `scripts/slurm/run_grid_array.slurm`.
+## Task types
 
-## Metric
+Each dataset's `task_type` in `DATASET_REGISTRY` (`src/data.py`) selects a task from `src/tasks.py`:
 
-ROC-AUC throughout (sklearn `roc_auc_score` on sigmoid probabilities).
-NaN is returned with a warning if a split contains only one class.
+| task_type  | Loss | Metrics (result keys) | Early stopping / selection |
+|------------|------|-----------------------|----------------------------|
+| binary     | BCE  | ROC-AUC (`*_auc`)     | max val AUC |
+| regression | MSE on z-scored targets | RMSE, MAE, R² (`*_rmse`, `*_mae`, `*_r2`), original units | min val RMSE |
+
+Scaffold splits are class-stratified for binary datasets only. Multi-task
+datasets (ClinTox) report the mean of per-task metrics and are stratified on
+the joint label pattern.
+
+To add a dataset: add it to `DATASET_REGISTRY` with its `task_type`, copy a
+config YAML (set `dataset:` and `batch_size:`), and add it to
+`DATASET_TO_CONFIG` in `scripts/run_grid.py`.
+
+## ModeTrace
+
+`src/modetrace/` is ModeTrace, ported from
+[modes-of-information](https://github.com/ishakarn/modes-of-information). It
+measures how much a model relies on node features, edge features and topology
+by shuffling features at rate `p` and measuring the drop in performance, using
+this repo's models, training step and metrics.
+
+| Perturbation | Shuffles | Leaves intact |
+|--------------|----------|---------------|
+| WNFS / GNFS  | node features within each graph / across the split | topology, edge features |
+| WEFS / GEFS  | edge features within each graph / across the split | topology, node features |
+| JGFS         | node + edge features across the split | topology only |
+
+Protocols (scaffold 10-fold CV on the MoleculeNet datasets):
+
+- *Matched* (`run_matched.py`): perturb train/val/test at rate `p`, train for a
+  fixed number of epochs, log every metric every epoch; `summarize.py` picks the best-val epoch.
+- *OOD* (`run_ood.py`): train on clean data, evaluate the best clean-val
+  checkpoint on each perturbed test set.
+
+```bash
+bash scripts/slurm/submit_modetrace.sh        # GIN/GINE on every dataset: OOD + matched
+sbatch scripts/slurm/run_modetrace.slurm ood --datasets ESOL --models gin gine \
+    --perturbations WNFS GNFS WEFS GEFS JGFS   # a single job
+python scripts/modetrace/summarize.py         # -> results/modetrace/{matched,ood}_summary.csv
+```
+
+Hyperparameters default to the ModeTrace values in `src/modetrace/__init__.py`
+(2 layers, 100 epochs, BCE `pos_weight`); `--config configs/bbbp.yaml` uses the
+benchmark's. Runs are seeded per fold and resume where they left off.
+`degradation` in the summaries is signed so that positive = worse.
+
+Differences from the original repo: molecular datasets only; ModeTrace runs this
+repo's models (MLP head, configurable readout); molecular datasets keep the first task only, as before;
+weights are seeded per fold; a GNFS bug that misassigned features after a
+zero-node graph is fixed. Perturbations and fold assignments are otherwise identical.

@@ -1,4 +1,5 @@
-"""Scaffold splitting for molecular datasets using Bemis-Murcko scaffolds."""
+"""Splits: seeded 80/10/10 Bemis-Murcko scaffold split for the benchmark (cached to disk),
+scaffold 10-fold CV for ModeTrace, and the SPECTRA split loader."""
 
 import os
 import json
@@ -133,8 +134,12 @@ def get_or_create_split(
     train_frac: float = 0.8,
     val_frac: float = 0.1,
     test_frac: float = 0.1,
+    task_type: str = None,
 ) -> tuple:
-    """Load scaffold split from disk if cached, otherwise compute and save."""
+    """Load scaffold split from disk if cached, otherwise compute and save.
+
+    Class-stratified for binary datasets only; task_type defaults to the dataset's registry entry.
+    """
     os.makedirs(split_dir, exist_ok=True)
     split_path = os.path.join(split_dir, f"{dataset_name}_scaffold_seed{seed}.json")
 
@@ -144,17 +149,27 @@ def get_or_create_split(
         print(f"Loaded existing scaffold split from {split_path}")
         return splits['train'], splits['val'], splits['test']
 
-    from src.data import get_smiles
+    from src.data import get_smiles, DATASET_REGISTRY
     smiles_list = get_smiles(dataset)
 
-    labels = []
+    if task_type is None:
+        task_type = DATASET_REGISTRY.get(dataset_name.upper(), {}).get('task_type', 'binary')
+    stratify = task_type == 'binary'
+
+    # Stratify on the label; multi-task (ClinTox) on the joint label pattern sum(label_t * 2**t),
+    # so every task keeps both classes.
+    labels, task_labels = [], []
     for data in dataset:
         y = data.y
-        if y is not None:
-            v = y.view(-1)[0].item()
+        vals = y.view(-1).tolist() if y is not None else [float('nan')]
+        task_labels.append(vals)
+        if len(vals) == 1:
+            v = vals[0]
             labels.append(v if v == v else None)
-        else:
+        elif any(v != v for v in vals):
             labels.append(None)
+        else:
+            labels.append(float(sum(int(round(v)) << t for t, v in enumerate(vals))))
 
     train_idx, val_idx, test_idx = scaffold_split(
         smiles_list,
@@ -162,23 +177,116 @@ def get_or_create_split(
         val_frac=val_frac,
         test_frac=test_frac,
         seed=seed,
-        labels=labels,
+        labels=labels if stratify else None,
     )
 
-    # Sanity-check class balance
-    def _pos_ratio(idxs):
-        vals = [labels[i] for i in idxs if labels[i] is not None]
+    # Sanity-check class balance (per task)
+    def _pos_ratio(idxs, t):
+        vals = [task_labels[i][t] for i in idxs if task_labels[i][t] == task_labels[i][t]]
         return sum(1 for v in vals if round(float(v)) == 1) / max(len(vals), 1)
 
-    print(
-        f"  class balance — "
-        f"train: {_pos_ratio(train_idx):.2f} pos  "
-        f"val: {_pos_ratio(val_idx):.2f} pos  "
-        f"test: {_pos_ratio(test_idx):.2f} pos"
-    )
+    if stratify:
+        num_tasks = len(task_labels[0])
+        for t in range(num_tasks):
+            print(
+                f"  class balance{f' (task {t})' if num_tasks > 1 else ''} — "
+                f"train: {_pos_ratio(train_idx, t):.2f} pos  "
+                f"val: {_pos_ratio(val_idx, t):.2f} pos  "
+                f"test: {_pos_ratio(test_idx, t):.2f} pos"
+            )
 
     with open(split_path, 'w') as f:
         json.dump({'train': train_idx, 'val': val_idx, 'test': test_idx}, f)
     print(f"Saved scaffold split ({len(train_idx)}/{len(val_idx)}/{len(test_idx)}) to {split_path}")
+
+    return train_idx, val_idx, test_idx
+
+
+# ── scaffold k-fold CV (ModeTrace protocol) ─────────────────────────────────────────────
+# fold i = test, fold (i+1) % k = val, the rest = train. val/test are returned
+# in set-iteration order, as in the original ModeTrace code: GNFS/GEFS permute
+# features over the concatenated split, so list order fixes which permutation
+# a given seed produces.
+
+def scaffold_kfold_split(smiles_list: list, fold: int, k: int = 10) -> tuple:
+    """Scaffold k-fold CV. Scaffold groups, largest first (ties: lowest index),
+    are dealt to folds cyclically. Deterministic, label-free (so it also works
+    for regression).
+    """
+    scaffold_to_idxs = defaultdict(list)
+    for idx, smi in enumerate(smiles_list):
+        scaffold_to_idxs[_get_scaffold(smi) if smi else ''].append(idx)
+    scaffold_sets = sorted(scaffold_to_idxs.values(), key=lambda g: (-len(g), min(g)))
+
+    buckets = [[] for _ in range(k)]
+    for bucket_idx, group in enumerate(scaffold_sets):
+        buckets[bucket_idx % k].extend(group)
+
+    test_idx = set(buckets[fold])
+    val_idx  = set(buckets[(fold + 1) % k])
+    train_idx = [i for i in range(len(smiles_list)) if i not in test_idx and i not in val_idx]
+    return train_idx, list(val_idx), list(test_idx)
+
+
+# ── SPECTRA splits ──────────────────────────────────────────────────────────
+
+class SpectraSplitSkipped(Exception):
+    """Raised when a SPECTRA split is missing or fails the quality checks."""
+
+
+def _has_both_classes(idxs, labels) -> bool:
+    """True if every task has at least one 0 and one 1 among `idxs`."""
+    import numpy as np
+    sub = np.asarray(labels, dtype=float)[idxs]
+    if sub.ndim == 1:
+        sub = sub[:, None]
+    for t in range(sub.shape[1]):
+        col = sub[:, t]
+        col = col[~np.isnan(col)]
+        if len(np.unique(col)) < 2:
+            return False
+    return True
+
+
+def load_spectra_split(
+    split_dir: str,
+    sp: float,
+    split_idx: int,
+    labels=None,
+    min_test_size: int = 20,
+) -> tuple:
+    """Load one SPECTRA split from SPECTRA_evaluation's chemprop_data JSONs.
+
+    Reads `<split_dir>/SP_<sp:.2f>/data_<split_idx>.json`, whose indices refer
+    to rows of the curated CSV (see src.data.load_curated_csv).
+
+    High SPECTRA parameters leave very small and often single-class val/test
+    sets, where ROC-AUC is undefined and early stopping never fires. Such
+    splits are rejected with SpectraSplitSkipped rather than trained on.
+
+    Args:
+        split_dir:     e.g. .../splits_data/chemprop_data/spectra_tanimoto/bbbp
+        sp:            SPECTRA parameter (0.00 – 1.00, step 0.05)
+        split_idx:     replicate number (0, 1, 2)
+        labels:        per-molecule labels, shape (N,) or (N, num_tasks).
+                       When given, val and test must contain both classes.
+        min_test_size: minimum number of test molecules (0 disables the check).
+    """
+    path = os.path.join(split_dir, f"SP_{sp:.2f}", f"data_{split_idx}.json")
+    if not os.path.exists(path):
+        raise SpectraSplitSkipped(f"split file not found: {path}")
+
+    with open(path) as f:
+        splits = json.load(f)[0]
+    train_idx, val_idx, test_idx = splits['train'], splits['val'], splits['test']
+
+    if len(test_idx) < min_test_size:
+        raise SpectraSplitSkipped(
+            f"test set has {len(test_idx)} molecules (< min_test_size={min_test_size})"
+        )
+    if labels is not None:
+        for name, idxs in [('val', val_idx), ('test', test_idx)]:
+            if not idxs or not _has_both_classes(idxs, labels):
+                raise SpectraSplitSkipped(f"{name} set does not contain both classes")
 
     return train_idx, val_idx, test_idx

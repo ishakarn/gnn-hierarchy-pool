@@ -4,7 +4,7 @@
 #   sbatch scripts/slurm/run_single.slurm \
 #          --config configs/bbbp.yaml --model gcn --readout mean --seed 0
 #
-# Must be submitted from the gnn_readout_bio/ directory.
+# Must be submitted from the repo root.
 
 #SBATCH --job-name=gnn_readout
 #SBATCH --partition=gpu-preempt
@@ -18,8 +18,9 @@
 mkdir -p logs
 
 module load conda/latest
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate graph-pooling
 
-cd /work/pi_annagreen_umass_edu/Isha/graph-pooling/gnn_readout_bio
+cd "$SLURM_SUBMIT_DIR"
 
 python scripts/run_single.py "$@"
