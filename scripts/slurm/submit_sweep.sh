@@ -22,7 +22,7 @@ DATASETS=("$@")
 # Readouts and datasets per model, from docs/hparam_sweep_protocol.ipynb
 case "$MODEL" in
     gin|gine) READOUTS=(max mean sum attention multihead)
-              ALL_DATASETS=(BBBP BACE CLINTOX ESOL FREESOLV LIPO) ;;
+              ALL_DATASETS=(BBBP BACE CLINTOX) ;;
     chemprop) READOUTS=(max mean sum attention)
               ALL_DATASETS=(BBBP BACE CLINTOX) ;;   # Chemprop baseline is binary-only
     *)        echo "Unknown model '$MODEL'. Choose from: gin, gine, chemprop" >&2; exit 1 ;;

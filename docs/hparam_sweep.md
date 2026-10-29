@@ -38,11 +38,10 @@ bash scripts/slurm/submit_sweep.sh chemprop               # submit
 ```
 
 - Models: `chemprop` (BBBP, BACE, CLINTOX × max, mean, sum, attention = 12 jobs),
-  `gin` / `gine` (all 6 datasets × max, mean, sum, attention, multihead).
+  `gin` / `gine` (BBBP, BACE, CLINTOX × max, mean, sum, attention, multihead = 15 jobs).
+  Classification only for now; for regression pass the datasets: `bash scripts/slurm/submit_sweep.sh gine ESOL FREESOLV LIPO`.
 - Only some datasets: `bash scripts/slurm/submit_sweep.sh gine BBBP ESOL`
 - Only some readouts: `SWEEP_READOUTS="max mean" bash scripts/slurm/submit_sweep.sh gine`
-- `multihead` is not implemented yet, so for GIN/GINE use
-  `SWEEP_READOUTS="max mean sum attention"` until it is.
 
 Each job uses `gpu-preempt`, 1 GPU, 8 h, and `--requeue`. A Chemprop run takes about 1.5 min, so one job is about 4 h.
 
