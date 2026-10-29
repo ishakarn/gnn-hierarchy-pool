@@ -36,6 +36,14 @@ def parse_args():
     p.add_argument('--output_dir', default='./results',
                    help='Directory to save checkpoints and metric files')
 
+    # ---- Sweep overrides ----
+    p.add_argument('--num_layers', type=int,   default=None,
+                   help='Override num_layers in config (Chemprop: message-passing depth)')
+    p.add_argument('--dropout',    type=float, default=None,
+                   help='Override dropout in config')
+    p.add_argument('--patience',   type=int,   default=None,
+                   help='Override early-stopping patience in config')
+
     # ---- SPECTRA splits ----
     p.add_argument('--split', choices=['scaffold', 'spectra'], default=None,
                    help='Override `split` in config (default: scaffold)')
@@ -60,6 +68,9 @@ def main():
         'split':   args.split,
         'spectra_repo': args.spectra_repo,
         'min_test_size': args.min_test_size,
+        'num_layers':    args.num_layers,
+        'dropout':       args.dropout,
+        'patience':      args.patience,
     })
     split_type = cfg.get('split', 'scaffold')
     if split_type == 'spectra' and args.sp is None:
@@ -171,6 +182,8 @@ def main():
         'dropout':    cfg['dropout'],
         'lr':         cfg['lr'],
         'batch_size': cfg['batch_size'],
+        'epochs':     cfg['epochs'],
+        'patience':   cfg.get('patience', 20),
     })
     save_metrics(results, metrics_path)
 

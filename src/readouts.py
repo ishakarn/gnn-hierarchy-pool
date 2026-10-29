@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torch_geometric.nn import global_mean_pool, global_add_pool, global_max_pool
+from torch_geometric.nn.aggr import SetTransformerAggregation
 from torch_geometric.utils import softmax as pyg_softmax
 from .pooling.attn_pooling import GraphSelfAttention, GraphMultiHeadSelfAttention
 
@@ -51,7 +52,7 @@ class GatedAttentionReadout(nn.Module):
         return out  # [num_graphs, hidden_dim]
 
 
-READOUTS = ('mean', 'sum', 'max', 'attention', 'selfattention')
+READOUTS = ('mean', 'sum', 'max', 'attention', 'multihead', 'selfattention')
 
 
 def get_readout(readout_type: str, hidden_dim: int = None):
@@ -72,6 +73,10 @@ def get_readout(readout_type: str, hidden_dim: int = None):
         if hidden_dim is None:
             raise ValueError("hidden_dim is required for attention readout")
         return GatedAttentionReadout(hidden_dim)
+    elif readout_type == 'multihead':
+        if hidden_dim is None:
+            raise ValueError("hidden_dim is required for multihead readout")
+        return SetTransformerAggregation(hidden_dim, num_seed_points=1, heads=4)
     elif readout_type == 'selfattention':
         if hidden_dim is None:
             raise ValueError("hidden_dim is required for attention readout")

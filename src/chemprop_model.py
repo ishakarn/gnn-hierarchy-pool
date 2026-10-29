@@ -85,7 +85,7 @@ def build_chemprop(cfg: dict, readout: str, num_tasks: int = 1) -> MPNN:
 def _chemprop_auc(trainer, model, loader, dset) -> float:
     """Score the best checkpoint on one split, with the same rules as src/evaluate.py."""
     # ckpt_path='best' makes Lightning reload the best checkpoint before predicting.
-    probs  = torch.cat(trainer.predict(model, loader, ckpt_path='best')).numpy()   # [n, num_tasks]
+    probs  = torch.cat(trainer.predict(model, loader)).numpy()   # [n, num_tasks]
     labels = dset.Y
     valid  = ~np.isnan(labels)   # skip missing labels
     labels, probs = labels[valid], probs[valid]
@@ -146,8 +146,10 @@ def train_chemprop(
     )
     trainer.fit(model, train_loader, val_loader)
 
-    best_epoch = torch.load(checkpoint.best_model_path, weights_only=False)['epoch'] + 1
-
+    best_ckpt  = torch.load(checkpoint.best_model_path, weights_only=False)
+    model.load_state_dict(best_ckpt['state_dict'])
+    best_epoch = best_ckpt['epoch'] + 1
+    
     return {
         'train_auc':  _chemprop_auc(trainer, model, train_eval_loader, train_dset),
         'val_auc':    _chemprop_auc(trainer, model, val_loader,   val_dset),
