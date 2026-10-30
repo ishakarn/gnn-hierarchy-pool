@@ -92,10 +92,10 @@ def main():
                    choices=list(DATASET_TO_CONFIG.keys()))
     p.add_argument('--models',   nargs='+',
                    default=['gin', 'gine'],
-                   choices=['gcn', 'gin', 'gine', 'gat', 'graphsage', 'gcnp', 'chemprop'])
+                   choices=['gcn', 'gin', 'gine', 'gat', 'graphsage', 'gcnp', 'attentivefp', 'chemprop'])
     p.add_argument('--readouts', nargs='+',
                    default=['mean', 'sum', 'max', 'attention', 'selfattention'],
-                   choices=['mean', 'sum', 'max', 'attention', 'selfattention'])
+                   choices=['mean', 'sum', 'max', 'attention', 'selfattention', 'afp'])
     p.add_argument('--seeds',    nargs='+', type=int, default=[0, 1, 2])
     p.add_argument('--output_dir', default='./results')
     p.add_argument('--epochs',   type=int, default=None,

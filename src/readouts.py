@@ -2,7 +2,8 @@
 
 import torch
 import torch.nn as nn
-from torch_geometric.nn import global_mean_pool, global_add_pool, global_max_pool
+import torch.nn.functional as F
+from torch_geometric.nn import GATConv, global_mean_pool, global_add_pool, global_max_pool
 from torch_geometric.nn.aggr import SetTransformerAggregation
 from torch_geometric.utils import softmax as pyg_softmax
 from .pooling.attn_pooling import GraphSelfAttention, GraphMultiHeadSelfAttention
@@ -52,14 +53,51 @@ class GatedAttentionReadout(nn.Module):
         return out  # [num_graphs, hidden_dim]
 
 
-READOUTS = ('mean', 'sum', 'max', 'attention', 'multihead', 'selfattention')
+READOUTS = ('mean', 'sum', 'max', 'attention', 'multihead', 'selfattention', 'afp')
 
 
-def get_readout(readout_type: str, hidden_dim: int = None):
+class AttentiveFPReadout(nn.Module):
+    """AttentiveFP molecule-level readout (Xiong et al., J. Med. Chem. 2019).
+
+    A virtual super-node per graph starts as the ReLU'd sum of its node
+    embeddings, then for `num_timesteps` rounds attends over the graph's
+    nodes (GATConv from nodes -> super-node) and is updated by a GRU.
+
+    Mirrors the "Molecule Embedding" block of
+    torch_geometric.nn.models.AttentiveFP.forward, as a standalone readout
+    usable after any encoder.
+    """
+
+    def __init__(self, hidden_dim: int, num_timesteps: int = 2, dropout: float = 0.0):
+        super().__init__()
+        self.num_timesteps = num_timesteps
+        self.dropout = dropout
+        self.mol_conv = GATConv(hidden_dim, hidden_dim, dropout=dropout,
+                                add_self_loops=False, negative_slope=0.01)
+        self.mol_conv.explain = False  # same as PyG: cannot explain global pooling
+        self.mol_gru = nn.GRUCell(hidden_dim, hidden_dim)
+
+    def forward(self, x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        # Edges from every node to its graph's super-node
+        row = torch.arange(batch.size(0), device=batch.device)
+        edge_index = torch.stack([row, batch], dim=0)
+
+        out = global_add_pool(x, batch).relu_()
+        for _ in range(self.num_timesteps):
+            h = F.elu_(self.mol_conv((x, out), edge_index))
+            h = F.dropout(h, p=self.dropout, training=self.training)
+            out = self.mol_gru(h, out).relu_()
+        return out  # [num_graphs, hidden_dim]
+
+
+def get_readout(readout_type: str, hidden_dim: int = None,
+                num_timesteps: int = 2, dropout: float = 0.0):
     """Return a readout callable or nn.Module.
 
     For mean/sum/max: returns a function (x, batch) -> graph_emb.
     For attention:    returns a GatedAttentionReadout module.
+    For afp:          returns an AttentiveFPReadout module (uses
+                      num_timesteps and dropout).
 
     The returned object is always called as readout(x, batch).
     """
@@ -81,6 +119,10 @@ def get_readout(readout_type: str, hidden_dim: int = None):
         if hidden_dim is None:
             raise ValueError("hidden_dim is required for attention readout")
         return GraphSelfAttention(input_dim=hidden_dim, inner_dim=5*hidden_dim, mode='sample')
+    elif readout_type == 'afp':
+        if hidden_dim is None:
+            raise ValueError("hidden_dim is required for afp readout")
+        return AttentiveFPReadout(hidden_dim, num_timesteps=num_timesteps, dropout=dropout)
     else:
         raise ValueError(
             f"Unknown readout '{readout_type}'. "

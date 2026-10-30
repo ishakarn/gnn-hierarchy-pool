@@ -55,6 +55,10 @@ def parse_args():
                    help='Override `spectra_repo` in config (path to SPECTRA_evaluation)')
     p.add_argument('--min_test_size', type=int, default=None,
                    help='Skip SPECTRA splits with fewer test molecules (default 20)')
+
+    # ---- AttentiveFP ----
+    p.add_argument('--head', choices=['mlp', 'linear'], default=None,
+                   help='AttentiveFP classifier head (default mlp; linear = PyG original)')
     return p.parse_args()
 
 
@@ -71,6 +75,7 @@ def main():
         'num_layers':    args.num_layers,
         'dropout':       args.dropout,
         'patience':      args.patience,
+        'head':    args.head,
     })
     split_type = cfg.get('split', 'scaffold')
     if split_type == 'spectra' and args.sp is None:
@@ -81,11 +86,14 @@ def main():
     print(f"[run_single] device={device}  model={args.model}  readout={args.readout}  seed={args.seed}")
 
     # ---- Output paths ----
+    # head only applies to AttentiveFP; tag non-default heads so runs don't collide
+    head = cfg.get('head', 'mlp') if args.model == 'attentivefp' else None
+    model_tag = f"{args.model}-{head}" if head == 'linear' else args.model
     if split_type == 'spectra':
-        run_name = (f"{cfg['dataset']}_{args.model}_{args.readout}"
+        run_name = (f"{cfg['dataset']}_{model_tag}_{args.readout}"
                     f"_sp{args.sp:.2f}_split{args.split_idx}_seed{args.seed}")
     else:
-        run_name = f"{cfg['dataset']}_{args.model}_{args.readout}_seed{args.seed}"
+        run_name = f"{cfg['dataset']}_{model_tag}_{args.readout}_seed{args.seed}"
     os.makedirs(args.output_dir, exist_ok=True)
     ckpt_ext        = '.ckpt' if args.model == 'chemprop' else '.pt'
     checkpoint_path = os.path.join(args.output_dir, f"{run_name}_best{ckpt_ext}")
@@ -101,6 +109,10 @@ def main():
     }
     if split_type == 'spectra':
         run_info.update({'sp': round(args.sp, 2), 'split_idx': args.split_idx})
+    if head is not None:
+        run_info['head'] = head
+    if args.readout == 'afp':
+        run_info['num_timesteps'] = cfg.get('num_timesteps', 2)
 
     # ---- Data ----
     if split_type == 'spectra':
