@@ -11,7 +11,7 @@ from run_grid import DATASET_TO_CONFIG, _run_name, _run_single
 
 
 # Grid from docs/hparam_sweep_protocol.ipynb
-LAYERS   = [2, 3, 4, 5, 6]
+LAYERS   = [2, 3, 4, 5, 6, 7, 8]
 DROPOUTS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
 SEEDS    = [0, 1, 2, 3, 4]
 

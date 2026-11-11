@@ -83,20 +83,20 @@ def build_chemprop(cfg: dict, readout: str, num_tasks: int = 1) -> MPNN:
 
 
 def _chemprop_auc(trainer, model, loader, dset) -> float:
-    """Score the best checkpoint on one split, with the same rules as src/evaluate.py."""
-    # ckpt_path='best' makes Lightning reload the best checkpoint before predicting.
+    """Score one split with the same rules as src/evaluate.py: the mean of the per-task AUCs."""
+    # `model` already holds the best weights: train_chemprop loads them before scoring.
     probs  = torch.cat(trainer.predict(model, loader)).numpy()   # [n, num_tasks]
-    labels = dset.Y
-    valid  = ~np.isnan(labels)   # skip missing labels
-    labels, probs = labels[valid], probs[valid]
+    labels = dset.Y                                               # [n, num_tasks], NaN = missing
 
-    if len(np.unique(labels)) < 2:
-        warnings.warn(
-            "Split contains only one class — ROC-AUC undefined, returning NaN."
-        )
-        return float('nan')
+    per_task = []
+    for t in range(labels.shape[1]):
+        valid = ~np.isnan(labels[:, t])   # missing labels are per task
+        if len(np.unique(labels[valid, t])) < 2:
+            warnings.warn(f"Task {t} has only one class in this split — left out of the mean AUC.")
+            continue
+        per_task.append(roc_auc_score(labels[valid, t], probs[valid, t]))
 
-    return float(roc_auc_score(labels, probs))
+    return float(np.mean(per_task)) if per_task else float('nan')
 
 
 def train_chemprop(

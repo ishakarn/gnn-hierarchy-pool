@@ -16,6 +16,9 @@ import json
 import os
 import sys
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -23,6 +26,9 @@ from scipy import stats
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from run_sweep import LAYERS, DROPOUTS, SEEDS
+from src.results import (
+    METRIC_LABELS, READOUT_ORDER, model_label, ordered, readout_color, readout_label,
+)
 
 
 TIE_TOL       = 0.001                                   # configs this close on mean val count as tied
@@ -42,6 +48,13 @@ def _ci95(values: np.ndarray) -> float:
     if n < 2:
         return float('nan')
     return float(stats.t.ppf(0.975, n - 1) * values.std(ddof=1) / np.sqrt(n))
+
+
+def _pick_config(configs: pd.DataFrame, higher: bool) -> pd.Series:
+    """Best row of `configs` on val_mean; ties within TIE_TOL go to fewer layers, then lower dropout."""
+    best_val = configs['val_mean'].max() if higher else configs['val_mean'].min()
+    gap      = best_val - configs['val_mean'] if higher else configs['val_mean'] - best_val
+    return configs[gap <= TIE_TOL].sort_values(['num_layers', 'dropout']).iloc[0]
 
 
 def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
@@ -66,9 +79,7 @@ def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
         if eligible.empty:
             continue
 
-        best_val = eligible['val_mean'].max() if higher else eligible['val_mean'].min()
-        gap      = best_val - eligible['val_mean'] if higher else eligible['val_mean'] - best_val
-        chosen   = eligible[gap <= TIE_TOL].sort_values(['num_layers', 'dropout']).iloc[0]
+        chosen = _pick_config(eligible, higher)
 
         runs = group[(group['num_layers'] == chosen['num_layers'])
                      & (group['dropout'] == chosen['dropout'])]
@@ -103,11 +114,71 @@ def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
     return selected
 
 
+def plot_sweep(df: pd.DataFrame, selected: pd.DataFrame, out_dir: str, min_seeds: int = 4):
+    """Save one figure per (dataset, model): test metric vs depth, and test metric per readout.
+
+    Left panel: for each readout and depth, the dropout picked on mean val at that depth (same
+    rule as select_configs), plotted as test mean ± std over seeds. Right panel: each readout's
+    selected config from select_configs, test mean ± std. AUC uses a fixed 0.5-1 y-axis
+    (0.5 = chance) so small gaps between readouts are not blown up.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    for (dataset, model), group in df.groupby(['dataset', 'model']):
+        metric, higher = _primary_metric(group['task_type'].iloc[0])
+        val_col, test_col = f'val_{metric}', f'test_{metric}'
+        readouts = ordered(group['readout'].unique(), READOUT_ORDER)
+        sel      = selected[(selected['dataset'] == dataset) & (selected['model'] == model)]
+
+        fig, (ax_depth, ax_readout) = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
+        for i, readout in enumerate(readouts):
+            runs = group[group['readout'] == readout]
+            per_config = (runs.groupby(['num_layers', 'dropout'])[val_col]
+                          .agg(val_mean='mean', n_valid='count').reset_index())
+            per_config = per_config[per_config['n_valid'] >= min_seeds]
+
+            # Left: best dropout at each depth, scored on test
+            depths, means, stds = [], [], []
+            for layers, configs in per_config.groupby('num_layers'):
+                dropout = _pick_config(configs, higher)['dropout']
+                test    = runs[(runs['num_layers'] == layers) & (runs['dropout'] == dropout)][test_col].dropna()
+                depths.append(layers)
+                means.append(test.mean())
+                stds.append(test.std(ddof=1))
+            color = readout_color(readout, i)
+            ax_depth.errorbar(depths, means, yerr=stds, marker='o', capsize=3,
+                              color=color, label=readout_label(readout))
+
+            # Right: the selected config of this readout
+            row = sel[sel['readout'] == readout]
+            if len(row):
+                ax_readout.errorbar(i, row['test_mean'].iloc[0], yerr=row['test_std'].iloc[0],
+                                    fmt='o', capsize=5, color=color)
+
+        label = f"Test {METRIC_LABELS.get(metric, metric)}"
+        ax_depth.set_xticks(sorted(group['num_layers'].unique()))
+        ax_depth.set_xlabel('Number of layers')
+        ax_depth.set_ylabel(label)
+        ax_depth.legend(fontsize=8)
+        ax_readout.set_xticks(range(len(readouts)), [readout_label(r) for r in readouts])
+        ax_readout.set_xlim(-0.5, len(readouts) - 0.5)
+        ax_readout.set_xlabel('Readout (selected config)')
+        if metric == 'auc':
+            ax_depth.set_ylim(0.7, 0.9)
+        fig.suptitle(f"{dataset} | {model_label(model)}")
+
+        path = os.path.join(out_dir, f"{dataset}_{model}_sweep.png")
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  saved {path}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument('--results_dir', default='./results/sweep')
     p.add_argument('--min_seeds',   type=int, default=4,
                    help='Valid seeds a config needs to be eligible (protocol: 4 of 5)')
+    p.add_argument('--plot',        action='store_true',
+                   help='Also save the depth / readout figures to <results_dir>/plots/')
     args = p.parse_args()
 
     # results/sweep/<DATASET>/<model>/<readout>/L<l>_do<d>/*_metrics.json
@@ -152,7 +223,10 @@ def main():
               f"test_{r['metric']} {r['test_mean']:.4f} ± {r['test_std']:.4f} "
               f"(L{r['num_layers']}, do{r['dropout']}) | n={r['n']}{flags}")
 
+    if args.plot:
+        print()
+        plot_sweep(df, selected, os.path.join(args.results_dir, 'plots'), min_seeds=args.min_seeds)
+
 
 if __name__ == '__main__':
     main()
-    
