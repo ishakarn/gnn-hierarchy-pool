@@ -33,17 +33,16 @@ DATASET_TO_CONFIG = {
 }
 
 
-def _run_name(dataset, model, readout, seed, sp=None, split_idx=None):
-    """Must match the run_name built in run_single.py."""
-    if sp is None:
-        return f"{dataset.upper()}_{model}_{readout}_seed{seed}"
-    return f"{dataset.upper()}_{model}_{readout}_sp{sp:.2f}_split{split_idx}_seed{seed}"
+from src.run_identity import run_name as _run_name
+
+_RUNNERS = {}
 
 
 def _run_single(dataset, model, readout, seed, output_dir, extra_args,
-                sp=None, split_idx=None):
+                sp=None, split_idx=None, config=None, in_process=False,
+                jk_mode='cat', graph_cache_dir='./data/cache/graphs'):
     """Invoke run_single.py as a subprocess and stream its stdout."""
-    config = DATASET_TO_CONFIG[dataset.upper()]
+    config = config or DATASET_TO_CONFIG[dataset.upper()]
     cmd = [
         sys.executable,
         os.path.join(os.path.dirname(__file__), 'run_single.py'),
@@ -56,18 +55,26 @@ def _run_single(dataset, model, readout, seed, output_dir, extra_args,
     if sp is not None:
         cmd += ['--split', 'spectra', '--sp', f"{sp:.2f}", '--split_idx', str(split_idx)]
 
+    if model == 'jknet':
+        cmd += ['--jk_mode', jk_mode]
+    cmd += ['--graph_cache_dir', graph_cache_dir]
+    if in_process:
+        from src.experiment_runner import ExperimentRunner
+        if graph_cache_dir not in _RUNNERS:
+            _RUNNERS[graph_cache_dir] = ExperimentRunner(graph_cache_dir)
+        return _RUNNERS[graph_cache_dir].run(cmd[2:])
     result = subprocess.run(cmd, capture_output=False, text=True)
     if result.returncode != 0:
-        print(f"  [ERROR] {_run_name(dataset, model, readout, seed, sp, split_idx)}"
+        print(f"  [ERROR] {_run_name(dataset, model, readout, seed, sp, split_idx, jk_mode=jk_mode)}"
               f" — exit code {result.returncode}")
         return False
     return True
 
 
-def _collect_results(output_dir, combos) -> pd.DataFrame:
+def _collect_results(output_dir, combos, jk_mode='cat') -> pd.DataFrame:
     rows = []
     for dataset, model, readout, seed, sp, split_idx in combos:
-        run_name     = _run_name(dataset, model, readout, seed, sp, split_idx)
+        run_name     = _run_name(dataset, model, readout, seed, sp, split_idx, jk_mode=jk_mode)
         metrics_path = os.path.join(output_dir, f"{run_name}_metrics.json")
         if os.path.exists(metrics_path):
             with open(metrics_path) as f:
@@ -92,10 +99,10 @@ def main():
                    choices=list(DATASET_TO_CONFIG.keys()))
     p.add_argument('--models',   nargs='+',
                    default=['gin', 'gine'],
-                   choices=['gcn', 'gin', 'gine', 'gat', 'graphsage', 'gcnp', 'attentivefp', 'chemprop'])
+                   choices=['gcn', 'gin', 'gine', 'gat', 'graphsage', 'gcnp', 'attentivefp', 'jknet', 'chemprop'])
     p.add_argument('--readouts', nargs='+',
-                   default=['mean', 'sum', 'max', 'attention', 'selfattention'],
-                   choices=['mean', 'sum', 'max', 'attention', 'selfattention', 'afp'])
+                   default=['mean', 'sum', 'max', 'attention', 'multihead'],
+                   choices=['mean', 'sum', 'max', 'attention', 'multihead', 'selfattention', 'afp'])
     p.add_argument('--seeds',    nargs='+', type=int, default=[0, 1, 2])
     p.add_argument('--output_dir', default='./results')
     p.add_argument('--epochs',   type=int, default=None,
@@ -110,7 +117,12 @@ def main():
                    help='SPECTRA parameters to run (only with --split spectra)')
     p.add_argument('--split_idxs', nargs='+', type=int, default=[0, 1, 2],
                    help='SPECTRA split replicates to run (only with --split spectra)')
+    p.add_argument('--jk_mode', choices=['cat', 'max', 'lstm'], default='cat')
+    p.add_argument('--fresh_process', action='store_true',
+                   help='Run each fit in a subprocess (default: reuse process and graph cache)')
+    p.add_argument('--graph_cache_dir', default='./data/cache/graphs')
     args = p.parse_args()
+    jk_mode = args.jk_mode
 
     extra_args = ['--epochs', str(args.epochs)] if args.epochs else []
 
@@ -132,18 +144,19 @@ def main():
 
     failed = []
     for i, (dataset, model, readout, seed, sp, split_idx) in enumerate(combos, 1):
-        run_name = _run_name(dataset, model, readout, seed, sp, split_idx)
+        run_name = _run_name(dataset, model, readout, seed, sp, split_idx, jk_mode=jk_mode)
         print(f"\n[{i}/{n_total}] {run_name}")
         if args.skip_existing and os.path.exists(os.path.join(args.output_dir, f"{run_name}_metrics.json")):
             print("  [skip] metrics already exist")
             continue
         ok = _run_single(dataset, model, readout, seed, args.output_dir, extra_args,
-                         sp=sp, split_idx=split_idx)
+                         sp=sp, split_idx=split_idx, in_process=not args.fresh_process,
+                         jk_mode=jk_mode, graph_cache_dir=args.graph_cache_dir)
         if not ok:
             failed.append(run_name)
 
     # ---- Collect per-run results ----
-    df = _collect_results(args.output_dir, combos)
+    df = _collect_results(args.output_dir, combos, jk_mode=jk_mode)
     per_run_csv = os.path.join(args.output_dir, 'grid_results.csv')
     df.to_csv(per_run_csv, index=False)
     print(f"\nPer-run results  → {per_run_csv}")
@@ -159,6 +172,7 @@ def main():
         print(f"\nFailed runs ({len(failed)}):")
         for f in failed:
             print(f"  {f}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

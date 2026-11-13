@@ -54,8 +54,15 @@ def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
     Returns:
         DataFrame with the chosen layers/dropout, its test mean/std/CI/n and audit columns.
     """
+    if 'status' in df:
+        df = df[df['status'].eq('ok')]
+    extra = [c for c in ('split', 'sp', 'split_idx') if c in df and df[c].notna().any()]
+    group_cols = ['dataset', 'model', 'readout'] + extra
     rows = []
-    for (dataset, model, readout), group in df.groupby(['dataset', 'model', 'readout']):
+    for keys, group in df.groupby(group_cols, dropna=False):
+        dataset, model, readout = keys[:3]
+        if group.duplicated(['num_layers', 'dropout', 'seed']).any():
+            raise ValueError(f"Duplicate seed/config results in {keys}")
         metric, higher = _primary_metric(group['task_type'].iloc[0])
         val_col, test_col = f'val_{metric}', f'test_{metric}'
 
@@ -74,6 +81,7 @@ def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
                      & (group['dropout'] == chosen['dropout'])]
         test = runs[test_col].dropna().to_numpy()
         rows.append({
+            **dict(zip(extra, keys[3:])),
             'dataset':         dataset,
             'model':           model,
             'readout':         readout,
@@ -97,7 +105,7 @@ def select_configs(df: pd.DataFrame, min_seeds: int = 4) -> pd.DataFrame:
     # Best readout per (dataset, model), compared on the selected configs' mean val
     selected = pd.DataFrame(rows)
     selected['best_readout'] = False
-    for _, group in selected.groupby(['dataset', 'model']):
+    for _, group in selected.groupby(['dataset', 'model'] + extra, dropna=False):
         best_idx = group['val_mean'].idxmax() if group['metric'].iloc[0] == 'auc' else group['val_mean'].idxmin()
         selected.loc[best_idx, 'best_readout'] = True
     return selected
@@ -111,7 +119,8 @@ def main():
     args = p.parse_args()
 
     # results/sweep/<DATASET>/<model>/<readout>/L<l>_do<d>/*_metrics.json
-    files = sorted(glob.glob(os.path.join(args.results_dir, '*', '*', '*', '*', '*_metrics.json')))
+    from pathlib import Path
+    files = sorted(Path(args.results_dir).rglob('*_metrics.json'))
     if not files:
         print(f"No *_metrics.json files under {args.results_dir}/<DATASET>/<model>/<readout>/<config>/")
         return
@@ -128,12 +137,14 @@ def main():
     print(f"{len(df)} runs → {args.results_dir}/sweep_results.csv, sweep_selected.csv\n")
 
     # ---- Checks (protocol: after the runs finish) ----
-    counts     = df.groupby(['dataset', 'model', 'readout']).size()
+    count_cols = ['dataset', 'model', 'readout'] + [
+        c for c in ('split', 'sp', 'split_idx') if c in df and df[c].notna().any()]
+    counts = df.groupby(count_cols, dropna=False).size()
     incomplete = counts[counts < EXPECTED_RUNS]
     if len(incomplete):
         print(f"Incomplete ({len(incomplete)} of {len(counts)} have < {EXPECTED_RUNS} runs):")
-        for (dataset, model, readout), n in incomplete.items():
-            print(f"  {dataset}/{model}/{readout}: {n}")
+        for keys, n in incomplete.items():
+            print(f"  {keys}: {n}")
     print(f"Runs stopped by the epoch cap (best_epoch > 250): {(df['best_epoch'] > 250).mean():.1%}")
     for dataset, group in df.groupby('dataset'):
         metric, _ = _primary_metric(group['task_type'].iloc[0])
@@ -155,4 +166,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    

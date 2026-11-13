@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import yaml
 
-from run_grid import DATASET_TO_CONFIG
+from run_grid import DATASET_TO_CONFIG, _run_name
 from src.data import DATASET_REGISTRY
 from src.tasks import build_task
 from src.utils import load_config, merge_configs
@@ -145,7 +145,7 @@ def run_trial(trial_id, dataset, model, readout, seeds, trial_cfg, base_output_d
 
     seed_results = []
     for seed in seeds:
-        run_name = f"{dataset.upper()}_{model}_{readout}_seed{seed}"
+        run_name = _run_name(dataset, model, readout, seed, jk_mode=trial_cfg.get('jk_mode', 'cat'))
         metrics_path = os.path.join(trial_dir, f"{run_name}_metrics.json")
 
         if os.path.exists(metrics_path):

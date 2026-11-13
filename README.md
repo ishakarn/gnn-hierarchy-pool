@@ -193,3 +193,21 @@ Differences from the original repo: molecular datasets only; ModeTrace runs this
 repo's models (MLP head, configurable readout); molecular datasets keep the first task only, as before;
 weights are seeded per fold; a GNFS bug that misassigned features after a
 zero-node graph is fixed. Perturbations and fold assignments are otherwise identical.
+
+## Jumping Knowledge networks
+
+JKNet combines a GCN backbone with node-level Jumping Knowledge before the existing
+graph readout and MLP head. Choose `--jk_mode cat` (default), `max`, or `lstm`;
+the five study readouts are max, mean, sum, attention, and multihead.
+
+```bash
+# One training run
+python scripts/run_single.py --config configs/bbbp.yaml --model jknet --readout mean --jk_mode cat --seed 0
+
+# The same model on a supplied SPECTRA split
+python scripts/run_single.py --config configs/bbbp.yaml --model jknet --readout mean --jk_mode cat --seed 0 --split spectra --sp 0.00 --split_idx 0
+```
+
+JKNet also works with the existing grid, sweep, and Slurm scripts. Batch runs
+reuse cached molecular graphs across fits. See [docs/jknet.md](docs/jknet.md) for
+setup, audited scaffold/SPECTRA commands, result selection, and verification.

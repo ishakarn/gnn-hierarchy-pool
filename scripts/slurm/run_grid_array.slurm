@@ -44,6 +44,12 @@ SPLIT_IDX=$(echo "$LINE" | cut -f6)
 
 CONFIG="configs/${DATASET,,}.yaml"
 
+JK_MODE=$(echo "$LINE" | cut -f7)
+MODEL_ARGS=()
+if [[ "$MODEL" == jknet && -n "$JK_MODE" ]]; then
+    MODEL_ARGS=(--jk_mode "$JK_MODE")
+fi
+
 SPLIT_ARGS=()
 if [ -n "$SP" ]; then
     SPLIT_ARGS=(--split spectra --sp "$SP" --split_idx "$SPLIT_IDX")
@@ -58,4 +64,5 @@ python scripts/run_single.py \
     --readout  "$READOUT" \
     --seed     "$SEED" \
     "${SPLIT_ARGS[@]}" \
+    "${MODEL_ARGS[@]}" \
     --output_dir results/

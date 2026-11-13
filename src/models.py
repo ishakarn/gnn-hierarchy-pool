@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINConv, GINEConv, GATConv, SAGEConv
+from torch_geometric.nn import GCNConv, GINConv, GINEConv, GATConv, SAGEConv, JumpingKnowledge
 from torch_geometric.nn.models.attentive_fp import GATEConv
 
 from src.readouts import get_readout
@@ -324,7 +324,44 @@ class AttentiveFPModel(nn.Module):
         return self.classifier(x)                          # [num_graphs, num_tasks]
 
 
+class JKNetModel(nn.Module):
+    """GCN + node-wise Jumping Knowledge, then swappable readout and MLP.
+
+    Cat is projected back to hidden_dim; max/LSTM already have that width.
+    Only post-convolution node embeddings enter JK, before graph pooling.
+    """
+    def __init__(self, num_node_features, hidden_dim, num_layers, dropout,
+                 readout_type, num_tasks=1, jk_mode="cat", readout_kwargs=None, **_):
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError("JKNet requires num_layers >= 1")
+        if jk_mode not in ("cat", "max", "lstm"):
+            raise ValueError("jk_mode must be cat, max, or lstm")
+        self.jk_mode = jk_mode
+        self.dropout = dropout
+        dims = [num_node_features] + [hidden_dim] * num_layers
+        self.convs = nn.ModuleList(
+            GCNConv(dims[i], dims[i + 1]) for i in range(num_layers))
+        self.jk = JumpingKnowledge(jk_mode, channels=hidden_dim, num_layers=num_layers)
+        self.jk_projection = (nn.Linear(hidden_dim * num_layers, hidden_dim)
+                              if jk_mode == "cat" else nn.Identity())
+        self.readout = get_readout(readout_type, hidden_dim, **(readout_kwargs or {}))
+        self.classifier = _mlp_head(hidden_dim, hidden_dim // 2, num_tasks, dropout)
+
+    def encode(self, data):
+        x, states = data.x.float(), []
+        for conv in self.convs:
+            x = F.relu(conv(x, data.edge_index))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            states.append(x)
+        return F.relu(self.jk_projection(self.jk(states)))
+
+    def forward(self, data):
+        return self.classifier(self.readout(self.encode(data), data.batch))
+
+
 MODEL_REGISTRY = {
+    'jknet':     JKNetModel,
     'gcn':       GCNModel,
     'graphsage': GraphSAGEModel,
     'gin':       GINModel,
@@ -354,6 +391,7 @@ def build_model(model_name: str, num_node_features: int, cfg: dict, num_tasks: i
         num_heads=cfg.get('num_heads', 4),
         num_edge_features=num_edge_features,
         head=cfg.get('head', 'mlp'),
+        jk_mode=cfg.get('jk_mode', 'cat'),
         readout_kwargs={
             'num_timesteps': cfg.get('num_timesteps', 2),
             'dropout': cfg['dropout'],

@@ -16,13 +16,15 @@ from src.readouts import READOUTS
 from src.train import train
 from src.evaluate import save_metrics
 from src.tasks import build_task
+from src.data_cache import DatasetCache
+from src.run_identity import model_tag as experiment_model_tag
 
 
 VALID_MODELS  = list(MODEL_REGISTRY.keys()) + ['chemprop']
 VALID_READOUTS = list(READOUTS)
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description="Train one GNN+readout combination on a MoleculeNet dataset."
     )
@@ -59,11 +61,15 @@ def parse_args():
     # ---- AttentiveFP ----
     p.add_argument('--head', choices=['mlp', 'linear'], default=None,
                    help='AttentiveFP classifier head (default mlp; linear = PyG original)')
-    return p.parse_args()
+    p.add_argument('--jk_mode', choices=['cat', 'max', 'lstm'], default=None,
+                   help='JKNet node-layer aggregation (default cat)')
+    p.add_argument('--graph_cache_dir', default=None,
+                   help='Shared curated-graph cache (default data/cache/graphs)')
+    return p.parse_args(argv)
 
 
-def main():
-    args = parse_args()
+def main(argv=None, data_cache=None):
+    args = parse_args(argv)
 
     cfg = load_config(args.config)
     cfg = merge_configs(cfg, {
@@ -75,7 +81,9 @@ def main():
         'num_layers':    args.num_layers,
         'dropout':       args.dropout,
         'patience':      args.patience,
-        'head':    args.head,
+        'head':   args.head,
+        'jk_mode': args.jk_mode,
+        'graph_cache_dir': args.graph_cache_dir,
     })
     split_type = cfg.get('split', 'scaffold')
     if split_type == 'spectra' and args.sp is None:
@@ -88,7 +96,8 @@ def main():
     # ---- Output paths ----
     # head only applies to AttentiveFP; tag non-default heads so runs don't collide
     head = cfg.get('head', 'mlp') if args.model == 'attentivefp' else None
-    model_tag = f"{args.model}-{head}" if head == 'linear' else args.model
+    jk_mode = cfg.get("jk_mode", "cat")
+    model_tag = experiment_model_tag(args.model, jk_mode, head or "mlp")
     if split_type == 'spectra':
         run_name = (f"{cfg['dataset']}_{model_tag}_{args.readout}"
                     f"_sp{args.sp:.2f}_split{args.split_idx}_seed{args.seed}")
@@ -102,25 +111,28 @@ def main():
     run_info = {
         'run_name':  run_name,
         'dataset':   cfg['dataset'],
-        'model':     args.model,
+        'model':     model_tag if args.model == 'jknet' else args.model,
         'readout':   args.readout,
         'seed':      args.seed,
         'split':     split_type,
     }
     if split_type == 'spectra':
         run_info.update({'sp': round(args.sp, 2), 'split_idx': args.split_idx})
+    if args.model == 'jknet':
+        run_info.update(encoder='jknet', jk_mode=jk_mode)
     if head is not None:
         run_info['head'] = head
     if args.readout == 'afp':
         run_info['num_timesteps'] = cfg.get('num_timesteps', 2)
 
     # ---- Data ----
+    data_cache = data_cache or DatasetCache(cfg.get('graph_cache_dir', './data/cache/graphs'))
     if split_type == 'spectra':
         # Graphs come from SPECTRA's curated CSV so split indices line up
-        dataset, meta = load_curated_csv(resolve_spectra_path(cfg, 'curated_csv'),
+        dataset, meta = data_cache.load_curated_csv(resolve_spectra_path(cfg, 'curated_csv'),
                                          cfg['label_cols'])
     else:
-        dataset, meta = load_dataset(cfg['dataset'], root=cfg.get('data_root', './data'))
+        dataset, meta = data_cache.load_dataset(cfg['dataset'], root=cfg.get('data_root', './data'))
     cfg['task_type'] = run_info['task_type'] = meta['task_type']
     source = ' (curated CSV)' if split_type == 'spectra' else ''
     print(f"Dataset: {cfg['dataset']}{source}  |  {len(dataset)} molecules  |  "
@@ -196,7 +208,17 @@ def main():
         'batch_size': cfg['batch_size'],
         'epochs':     cfg['epochs'],
         'patience':   cfg.get('patience', 20),
+        'train_frac': cfg.get('train_frac', 0.8),
+        'val_frac':   cfg.get('val_frac', 0.1),
+        'test_frac':  cfg.get('test_frac', 0.1),
+        'split_dir':  cfg.get('split_dir', './data/splits'),
+        'split_method': cfg.get('split_method', 'legacy_class_stratified'),
     })
+    if split_type == 'spectra':
+        results['split_method'] = 'spectra_tanimoto'
+        results['split_dir'] = resolve_spectra_path(cfg, 'spectra_split_dir')
+        for part, indices in (('train', train_idx), ('val', val_idx), ('test', test_idx)):
+            results[f'{part}_frac'] = len(indices) / len(dataset)
     save_metrics(results, metrics_path)
 
     metric = build_task(cfg).primary

@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 DEFAULTS = {
     'datasets':   ['BBBP', 'BACE'],
     'models':     ['gin', 'gine'],
-    'readouts':   ['mean', 'sum', 'max', 'attention', 'selfattention'],
+    'readouts':   ['mean', 'sum', 'max', 'attention', 'multihead'],
     'seeds':      list(range(10)),   # 0–9
     'sps':        [0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30],
     'split_idxs': [0, 1, 2],
@@ -67,13 +67,14 @@ def main():
     p.add_argument('--split_idxs', nargs='+', type=int, default=DEFAULTS['split_idxs'])
     p.add_argument('--no_filter', action='store_true',
                    help='Keep SPECTRA splits that run_single.py would skip')
+    p.add_argument('--jk_mode', choices=['cat', 'max', 'lstm'], default='cat')
     args = p.parse_args()
 
     datasets = [d.upper() for d in args.datasets]
 
     if args.split == 'scaffold':
         combos = list(product(datasets, args.models, args.readouts, args.seeds))
-        lines  = ["\t".join(map(str, c)) for c in combos]
+        lines = ["\t".join(map(str, c)) + ("\t\t\t" + args.jk_mode if c[1] == "jknet" else "") for c in combos]
     else:
         lines, dropped = [], []
         for dataset in datasets:
@@ -86,7 +87,8 @@ def main():
                     dropped.append(f"{dataset} SP={sp:.2f} split={k}: {reason}")
                     continue
                 for model, readout, seed in product(args.models, args.readouts, args.seeds):
-                    lines.append(f"{dataset}\t{model}\t{readout}\t{seed}\t{sp:.2f}\t{k}")
+                    lines.append(f"{dataset}\t{model}\t{readout}\t{seed}\t{sp:.2f}\t{k}"
+                                 + ("\t" + args.jk_mode if model == "jknet" else ""))
         if dropped:
             print(f"Left out {len(dropped)} SPECTRA split(s) that would be skipped:")
             for d in dropped:

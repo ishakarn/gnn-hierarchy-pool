@@ -23,3 +23,9 @@ train_frac: 0.8
 val_frac: 0.1
 test_frac: 0.1
 split_dir: ./data/splits
+
+# SPECTRA curated CSV order matches the supplied split indices.
+spectra_repo: ../SPECTRA_evaluation
+curated_csv: datasets/curated_datasets/clintox.csv
+spectra_split_dir: splits_data/chemprop_data/spectra_tanimoto/clintox
+label_cols: [FDA_APPROVED, CT_TOX]
