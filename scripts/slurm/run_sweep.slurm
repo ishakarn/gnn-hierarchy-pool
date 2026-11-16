@@ -18,6 +18,7 @@
 #SBATCH --requeue
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+#SBATCH --constraint="sm_75|sm_80|sm_86|sm_89"
 
 set -eo pipefail
 hostname
@@ -28,7 +29,7 @@ set -u
 cd "$SLURM_SUBMIT_DIR"
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 which python && python --version
-nvidia-smi --query-gpu=name,memory.total --format=csv
+nvidia-smi --query-gpu=name,memory.total --format=csv || true
 
 DATASET=$1
 MODEL=$2
