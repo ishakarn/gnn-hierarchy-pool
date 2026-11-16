@@ -43,6 +43,8 @@ def parse_args():
                    help='Override dropout in config')
     p.add_argument('--patience',   type=int,   default=None,
                    help='Override early-stopping patience in config')
+    p.add_argument('--hidden_dim', type=int, default=None,
+                   help='Override hidden_dim in config (sweep over [64, 128, 256])')
 
     # ---- SPECTRA splits ----
     p.add_argument('--split', choices=['scaffold', 'spectra'], default=None,
@@ -65,6 +67,7 @@ def main():
     cfg = merge_configs(cfg, {
         'readout': args.readout,
         'epochs':  args.epochs,
+        'hidden_dim': args.hidden_dim,
         'split':   args.split,
         'spectra_repo': args.spectra_repo,
         'min_test_size': args.min_test_size,
@@ -182,6 +185,7 @@ def main():
         'dropout':    cfg['dropout'],
         'lr':         cfg['lr'],
         'batch_size': cfg['batch_size'],
+        'n_params':   n_params,
         'epochs':     cfg['epochs'],
         'patience':   cfg.get('patience', 20),
     })

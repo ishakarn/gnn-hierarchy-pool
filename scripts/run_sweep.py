@@ -14,11 +14,11 @@ from run_grid import DATASET_TO_CONFIG, _run_name, _run_single
 LAYERS   = [2, 3, 4, 5, 6, 7, 8]
 DROPOUTS = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
 SEEDS    = [0, 1, 2, 3, 4]
+HIDDEN_DIMS = [64, 128, 256]
 
-
-def run_dir(output_dir, dataset, model, readout, layers, dropout):
-    """Folder for one config; holds one metrics file per seed, e.g. BBBP/gin/sum/L4_do0.2."""
-    return os.path.join(output_dir, dataset, model, readout, f"L{layers}_do{dropout}")
+def run_dir(output_dir, dataset, model, readout, layers, dropout, hidden_dim):
+    """Folder for one config; holds one metrics file per seed, e.g. BBBP/gin/sum/L4_do0.2_h128."""
+    return os.path.join(output_dir, dataset, model, readout, f"L{layers}_do{dropout}_h{hidden_dim}")
 
 
 def main():
@@ -31,6 +31,7 @@ def main():
                    choices=['max', 'mean', 'sum', 'attention', 'multihead'])
     p.add_argument('--layers',   nargs='+', type=int,   default=LAYERS)
     p.add_argument('--dropouts', nargs='+', type=float, default=DROPOUTS)
+    p.add_argument('--hidden_dims', nargs='+', type=int, default=HIDDEN_DIMS)
     p.add_argument('--seeds',    nargs='+', type=int,   default=SEEDS)
     p.add_argument('--epochs',   type=int, default=300)
     p.add_argument('--patience', type=int, default=50)
@@ -38,15 +39,16 @@ def main():
     args = p.parse_args()
 
     dataset = args.dataset.upper()
-    combos  = list(product(args.layers, args.dropouts, args.seeds))
+    combos  = list(product(args.layers, args.dropouts, args.hidden_dims, args.seeds))
     print(f"Sweep: {dataset}/{args.model}/{args.readout} | {len(args.layers)} layers × "
-          f"{len(args.dropouts)} dropouts × {len(args.seeds)} seeds = {len(combos)} runs\n")
+          f"{len(args.dropouts)} dropouts × {len(args.hidden_dims)} widths × "
+          f"{len(args.seeds)} seeds = {len(combos)} runs\n")
 
     failed, n_skipped = [], 0
-    for i, (layers, dropout, seed) in enumerate(combos, 1):
-        out_dir  = run_dir(args.output_dir, dataset, args.model, args.readout, layers, dropout)
+    for i, (layers, dropout, hidden_dim, seed) in enumerate(combos, 1):
+        out_dir  = run_dir(args.output_dir, dataset, args.model, args.readout, layers, dropout, hidden_dim)
         run_name = _run_name(dataset, args.model, args.readout, seed)
-        label    = f"L{layers}_do{dropout}/{run_name}"
+        label    = f"L{layers}_do{dropout}_h{hidden_dim}/{run_name}"
 
         # Resume after preemption: a finished run leaves its metrics file behind
         if os.path.exists(os.path.join(out_dir, f"{run_name}_metrics.json")):
@@ -55,10 +57,11 @@ def main():
 
         print(f"\n[{i}/{len(combos)}] {label}")
         extra_args = [
-            '--num_layers', str(layers),
-            '--dropout',    str(dropout),
-            '--epochs',     str(args.epochs),
-            '--patience',   str(args.patience),
+            '--num_layers',  str(layers),
+            '--dropout',     str(dropout),
+            '--hidden_dim',  str(hidden_dim),
+            '--epochs',      str(args.epochs),
+            '--patience',    str(args.patience),
         ]
         if not _run_single(dataset, args.model, args.readout, seed, out_dir, extra_args):
             failed.append(label)
