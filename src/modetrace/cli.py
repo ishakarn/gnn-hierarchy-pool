@@ -39,10 +39,11 @@ def rate(value: str) -> float:
 
 
 def resolve_cfg(args) -> dict:
-    """DEFAULTS <- --config YAML <- CLI overrides."""
+    """DEFAULTS <- --config YAML (its `hparams` block, for sweep configs) <- CLI overrides."""
     cfg = dict(DEFAULTS)
     if args.config:
-        cfg.update(load_config(args.config))
+        loaded = load_config(args.config)
+        cfg.update(loaded.get('hparams', loaded))
     if args.epochs is not None:
         cfg['epochs'] = args.epochs
     return cfg

@@ -195,10 +195,15 @@ def panel_curves(ax, tab, dataset, metric, perturbation, models, readouts):
                 continue
             c = model_color(model, j)
             ls = READOUT_STYLES[k % len(READOUT_STYLES)]
-            ax.plot(rows['p'], rows['mean'], color=c, linestyle=ls, marker=model_marker(model),
-                    markersize=5, linewidth=1.6)
-            ax.fill_between(rows['p'], rows['mean'] - rows['std'].fillna(0),
-                            rows['mean'] + rows['std'].fillna(0), color=c, alpha=0.15)
+            # Band: ± 1 SD of the test metric over folds. Hollow marker = change from clean not
+            # significant (paired 95% CI over folds includes 0).
+            sd = rows['std'].fillna(0)
+            sig = _significant(rows)
+            ax.plot(rows['p'], rows['mean'], color=c, linestyle=ls, linewidth=1.6)
+            ax.fill_between(rows['p'], rows['mean'] - sd, rows['mean'] + sd, color=c, alpha=0.15)
+            ax.scatter(rows['p'][sig], rows['mean'][sig], color=c, marker=model_marker(model), s=28, zorder=3)
+            ax.scatter(rows['p'][~sig], rows['mean'][~sig], facecolor='white', edgecolor=c,
+                       marker=model_marker(model), s=28, zorder=3)
             ax.axhline(clean['mean'].iloc[0], color=c, linestyle=':', linewidth=0.8, alpha=0.6)
     na = perturbation in EDGE_PERTURBATIONS and not any(m in EDGE_AWARE_MODELS for m in models)
     ax.set_title(perturbation + ('  (no edge-aware model)' if na else ''), fontsize=10)
@@ -206,6 +211,11 @@ def panel_curves(ax, tab, dataset, metric, perturbation, models, readouts):
     ax.set_xticklabels(['0', '.25', '.5', '.75', '1'])
     ax.set_xlim(-0.05, 1.05)
     ax.grid(axis='y', linewidth=0.4, alpha=0.5)
+
+
+def _significant(rows) -> pd.Series:
+    """Clean points, and perturbed points whose paired 95% CI of the change from clean excludes 0."""
+    return (rows['p'] == 0) | (rows['degradation_mean'].abs() > rows['degradation_ci95'].fillna(np.inf))
 
 
 def _curve_legend(models, readouts):
@@ -248,7 +258,8 @@ def fig_curves(tab, name, title, datasets, metric_of, models, readouts, out_dir)
         fig.legend(handles=_curve_legend(models, readouts), loc='lower center',
                    ncol=len(models) + (len(readouts) if len(readouts) > 1 else 0),
                    frameon=False, bbox_to_anchor=(0.5, -0.02 - 0.02 / len(rows)))
-        fig.text(0.5, -0.06 - 0.03 / len(rows), PERTURB_KEY + '  |  dotted: clean (p = 0) level; band: ± std over folds',
+        fig.text(0.5, -0.06 - 0.03 / len(rows), PERTURB_KEY + '  |  dotted: clean level; band: ± 1 SD over folds; '
+                 'hollow marker: not significantly different from clean',
                  ha='center', fontsize=7.5, color='#444', style='italic')
         fig.suptitle(suptitle, fontsize=12, fontweight='bold')
         fig.tight_layout(rect=(0, 0.02, 1, 0.97))
@@ -265,8 +276,8 @@ def _relative_drop(tab, dataset, metric, model, readout, perturbation, p=1.0):
     clean = sub.loc[sub['perturbation'] == 'none', 'mean']
     row = sub[(sub['perturbation'] == perturbation) & np.isclose(sub['p'], p)]
     if clean.empty or row.empty or clean.iloc[0] == 0:
-        return np.nan
-    return float(row['degradation_mean'].iloc[0] / abs(clean.iloc[0]))
+        return np.nan, False
+    return float(row['degradation_mean'].iloc[0] / abs(clean.iloc[0])), bool(_significant(row).iloc[0])
 
 
 def fig_drop_heatmap(matched, ood, datasets, metric_of, models, readouts, out_dir):
@@ -284,13 +295,15 @@ def fig_drop_heatmap(matched, ood, datasets, metric_of, models, readouts, out_di
         for ax, (tab, name) in zip(axes[0], tables):
             mat = np.full((len(rows), len(PERTURBATIONS)), np.nan)
             na = np.zeros_like(mat, dtype=bool)
+            sig = np.zeros_like(mat, dtype=bool)
             for i, (d, m, r) in enumerate(rows):
                 metric = _modetrace_metric(metric_of[d])
                 for j, pert in enumerate(PERTURBATIONS):
                     if pert in EDGE_PERTURBATIONS and m not in EDGE_AWARE_MODELS:
                         na[i, j] = True
                     else:
-                        mat[i, j] = 100 * _relative_drop(tab, d, metric, m, r, pert)
+                        rel, sig[i, j] = _relative_drop(tab, d, metric, m, r, pert)
+                        mat[i, j] = 100 * rel
             # Diverging scale centred on 0: red = worse than clean, blue = better
             # Capped at ±100% so large regression drops don't wash out the AUC rows (text stays exact)
             vmax = min(100.0, max(10.0, np.nanmax(np.abs(mat)) if np.isfinite(mat).any() else 10.0))
@@ -306,7 +319,7 @@ def fig_drop_heatmap(matched, ood, datasets, metric_of, models, readouts, out_di
                                                    edgecolor='none'))
                         ax.text(j, i, 'not run', ha='center', va='center', fontsize=6.5, color='#aaa')
                     else:
-                        ax.text(j, i, f'{mat[i, j]:+.0f}%', ha='center', va='center', fontsize=8,
+                        ax.text(j, i, f"{mat[i, j]:+.0f}%{'*' if sig[i, j] else ''}", ha='center', va='center', fontsize=8,
                                 color='white' if abs(mat[i, j]) > 0.6 * vmax else 'black')
             ax.set_xticks(range(len(PERTURBATIONS)))
             ax.set_xticklabels(PERTURBATIONS, fontsize=9)
@@ -320,7 +333,7 @@ def fig_drop_heatmap(matched, ood, datasets, metric_of, models, readouts, out_di
             plt.colorbar(im, ax=ax, fraction=0.04, pad=0.03).set_label('% worse than clean (blue = better)',
                                                                        fontsize=8)
         fig.text(0.5, -0.02, 'AUC: (clean − perturbed) / clean;  RMSE: (perturbed − clean) / clean.  '
-                 'n/a: model never reads edge features.', ha='center', fontsize=7.5, style='italic', color='#444')
+                 'n/a: model never reads edge features.  *: paired 95% CI over folds excludes 0.', ha='center', fontsize=7.5, style='italic', color='#444')
         fig.tight_layout()
         _save(fig, path)
 

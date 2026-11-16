@@ -177,16 +177,22 @@ Protocols (scaffold 10-fold CV on the MoleculeNet datasets):
 - *OOD* (`run_ood.py`): train on clean data, evaluate the best clean-val
   checkpoint on each perturbed test set.
 
+Sweeps are described by YAML configs in `configs/modetrace/` (datasets, models,
+perturbations, p values, folds, hyperparameters), as in the original repo:
+
 ```bash
-bash scripts/slurm/submit_modetrace.sh        # GIN/GINE on every dataset: OOD + matched
+python scripts/modetrace/submit.py configs/modetrace/regression.yaml --dry-run   # one job per protocol x dataset x model
+python scripts/modetrace/submit.py configs/modetrace/regression.yaml
+python scripts/modetrace/summarize.py --results_dir results/modetrace/regression
+python scripts/plot_datasets.py --modetrace_dir results/modetrace/regression --datasets ESOL FREESOLV LIPO
+
 sbatch scripts/slurm/run_modetrace.slurm ood --datasets ESOL --models gin gine \
-    --perturbations WNFS GNFS WEFS GEFS JGFS   # a single job
-python scripts/modetrace/summarize.py         # -> results/modetrace/{matched,ood}_summary.csv
+    --perturbations WNFS GNFS WEFS GEFS JGFS   # or a single job by hand
 ```
 
 Hyperparameters default to the ModeTrace values in `src/modetrace/__init__.py`
-(2 layers, 100 epochs, BCE `pos_weight`); `--config configs/bbbp.yaml` uses the
-benchmark's. Runs are seeded per fold and resume where they left off.
+(2 layers, 100 epochs, BCE `pos_weight`); `--config` overrides them with a sweep
+config's `hparams` block or a benchmark config such as `configs/bbbp.yaml`. Runs are seeded per fold and resume where they left off.
 `degradation` in the summaries is signed so that positive = worse.
 
 Differences from the original repo: molecular datasets only; ModeTrace runs this

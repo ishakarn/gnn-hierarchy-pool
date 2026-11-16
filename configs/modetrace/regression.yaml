@@ -1,0 +1,24 @@
+# ModeTrace sweep: regression datasets, GIN vs GINE, every perturbation at every p.
+# Same layout and hyperparameters as modes-of-information/configs/molecular.yaml.
+#
+#   python scripts/modetrace/submit.py configs/modetrace/regression.yaml --dry-run
+#   python scripts/modetrace/submit.py configs/modetrace/regression.yaml
+
+output_dir: results/modetrace/regression
+protocols: [matched, ood]
+
+datasets: [ESOL, FREESOLV, LIPO]
+models: [gin, gine]
+readouts: [mean]
+perturbations: [none, WNFS, GNFS, WEFS, GEFS, JGFS]
+p_values: [0.0, 0.25, 0.50, 0.75, 1.00]
+folds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+hparams:
+  hidden_dim:   128
+  num_layers:   2
+  dropout:      0.3
+  epochs:       100
+  batch_size:   64
+  lr:           0.001
+  weight_decay: 0.00001
