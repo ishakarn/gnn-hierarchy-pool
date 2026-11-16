@@ -1,12 +1,12 @@
 # Running the hyperparameter sweep
 
 How to run the sweep described in `docs/hparam_sweep_protocol.ipynb`
-(layers 2–6 × dropout 0.0–0.5 × seeds 0–4 = 150 runs per dataset / model / readout,
+(layers 2–8 × dropout 0.0–0.5 × hidden_dim 64–256 × seeds 0–4 = 630 runs per dataset / model / readout,
 300 epochs, patience 50).
 
 | File | What it does |
 |---|---|
-| `scripts/run_sweep.py` | Runs the 150 runs for one (dataset, model, readout), one after another. Skips runs that already have a metrics file. |
+| `scripts/run_sweep.py` | Runs the 210 runs for one (dataset, model, readout, hidden_dim), one after another. Skips runs that already have a metrics file. |
 | `scripts/slurm/run_sweep.slurm` | Runs `run_sweep.py` as one GPU job. |
 | `scripts/slurm/submit_sweep.sh` | Submits one job per (dataset, readout) for a model. |
 | `scripts/aggregate_sweep.py` | Collects all results and picks the best config per (dataset, model, readout). |
@@ -50,7 +50,7 @@ Each job uses `gpu-preempt`, 1 GPU, 8 h, and `--requeue`. A Chemprop run takes a
 ```bash
 squeue --me                               # PD = waiting, R = running
 tail -f logs/sweep_<model>_<dataset>_<readout>_<JOBID>.out   # live output of one job
-ls results/sweep/BBBP/chemprop/mean/*/*_metrics.json | wc -l   # finished runs (150 = done)
+ls results/sweep/BBBP/chemprop/mean/*/*_metrics.json | wc -l   # finished runs (630 = done)
 ```
 
 **Resuming:** if a job is preempted, times out or fails, just submit again with the same command.
@@ -68,7 +68,7 @@ This writes to `results/sweep/`:
   needs at least 4 valid seeds, and ties within 0.001 go to fewer layers, then lower dropout. Test is
   reported as mean ± std and 95% CI.
 
-It also prints groups with fewer than 150 runs, the share of runs that hit the epoch cap,
+It also prints groups with fewer than 630 runs, the share of runs that hit the epoch cap,
 and configs that land on the edge of the grid.
 
 ## Run without Slurm
@@ -84,7 +84,7 @@ A smaller grid (e.g. a quick test): `--layers 2 3 --dropouts 0.0 --seeds 0 --epo
 ## Output layout
 
 ```
-results/sweep/<DATASET>/<model>/<readout>/L<layers>_do<dropout>/<DATASET>_<model>_<readout>_seed<N>_metrics.json
+results/sweep/<DATASET>/<model>/<readout>/L<layers>_do<dropout>_h<hidden_dim>/<DATASET>_<model>_<readout>_seed<N>_metrics.json
 ```
 
 Checkpoints are deleted after each run to save space. Only the metrics JSON is kept.
